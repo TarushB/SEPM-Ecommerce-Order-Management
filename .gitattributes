@@ -1,0 +1,8 @@
+# normalise line endings; Windows batch files must keep CRLF
+* text=auto
+*.bat text eol=crlf
+*.png binary
+
+# keep GitHub's language bar about our code, not the bundled Mermaid library
+frontend/vendor/** linguist-vendored
+docs/** linguist-documentation

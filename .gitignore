@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# trained model (recreate with train_model.bat)
+ml/models/
+
+# dataset CSVs are not committed (download from Kaggle, see README)
+*.csv
+
+# local secrets / logs
+.env
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
