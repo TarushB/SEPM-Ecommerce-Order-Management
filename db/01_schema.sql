@@ -50,3 +50,25 @@ CREATE TABLE seller (
     seller_id  CHAR(32) PRIMARY KEY,
     zip_prefix INTEGER  NOT NULL REFERENCES zip_code(zip_prefix)
 );
+
+-- ---------------------------------------------------------------------
+-- Catalogue
+-- ---------------------------------------------------------------------
+CREATE TABLE category (
+    category_name    VARCHAR(60) PRIMARY KEY,
+    category_name_en VARCHAR(60) NOT NULL UNIQUE          -- candidate key
+);
+
+CREATE TABLE product (
+    product_id         CHAR(32) PRIMARY KEY,
+    category_name      VARCHAR(60) REFERENCES category(category_name)
+                                   ON UPDATE CASCADE ON DELETE RESTRICT,
+    name_length        SMALLINT CHECK (name_length >= 0),
+    description_length INTEGER  CHECK (description_length >= 0),
+    photos_qty         SMALLINT CHECK (photos_qty >= 0),
+    weight_g           INTEGER  CHECK (weight_g >= 0),
+    length_cm          SMALLINT CHECK (length_cm >= 0),
+    height_cm          SMALLINT CHECK (height_cm >= 0),
+    width_cm           SMALLINT CHECK (width_cm >= 0),
+    stock_qty          INTEGER  NOT NULL DEFAULT 50 CHECK (stock_qty >= 0)  -- added for transaction/concurrency demos
+);
