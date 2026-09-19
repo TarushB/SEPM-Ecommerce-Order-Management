@@ -88,3 +88,57 @@ Windows 10/11 (also macOS/Linux), PostgreSQL 16, Python 3.10+, any modern browse
 | **FR-20** | A read-only SQL console shall let users run their own SELECT queries safely (read-only transaction, 15 s timeout). | Low | SQL console |
 
 ---
+
+## 4. Non-functional requirements
+
+| ID | Category | Requirement |
+|---|---|---|
+| NFR-1 | Security | Least privilege: the app's login role `olist_app` owns no data privileges; all access goes through group roles. |
+| NFR-2 | Security | All user input is passed as bound parameters (no string-built SQL); passwords never leave the database. |
+| NFR-3 | Integrity | Data is stored in BCNF with PK, FK, UNIQUE and CHECK constraints on every table. |
+| NFR-4 | Reliability | Each web request is one transaction: commit on success, rollback on any error. |
+| NFR-5 | Performance | Order search and reports on the full dataset return in under 1 second on a typical laptop (B-tree, composite, partial and GIN indexes). |
+| NFR-6 | Usability | A new user can build and start the system with three scripts (`setup_db`, `train_model`, `run_app`). |
+| NFR-7 | Maintainability | SQL is split into one file per concern (`db/01`–`14`); the full database can be rebuilt from scratch in about a minute. |
+| NFR-8 | Portability | Runs on Windows, macOS and Linux; no build step for the front end. |
+| NFR-9 | Transparency | The SQL shown in the UI is exactly the SQL the server executed (client-side parameter binding). |
+| NFR-10 | ML validity | The model is validated on time-ordered data (no future information in features) and reports ROC-AUC, PR-AUC and recall on held-out months. |
+
+---
+
+## 5. Data requirements
+
+- **Source:** 9 CSV files, ≈1.6 million rows in total (1.0 M of them geolocation points).
+- **Cleaning:** geolocation reduced to one point per zip prefix with outliers removed; missing zip prefixes and category translations added; anomalies exposed in `v_data_quality`.
+- **Retention:** the database can be dropped and rebuilt from the CSVs at any time; the CSVs are not stored in the repository.
+
+---
+
+## 6. Use cases
+
+| ID | Actor | Use case | Main flow |
+|---|---|---|---|
+| UC-1 | Any user | Log in | Enter credentials → `fn_login` checks bcrypt hash → role stored in session |
+| UC-2 | Manager | Place order | Pick customer, products, payment → `CALL sp_place_order` → order, items, payment inserted in one transaction → risk score shown |
+| UC-3 | Seller | Update order status | Open own order → choose next status → trigger validates and logs the change |
+| UC-4 | Manager | Cancel order | `CALL sp_cancel_order` → status set to canceled, audit row written |
+| UC-5 | Analyst | Run report | Choose Q1–Q16 → view rows, SQL, EXPLAIN plan → export CSV |
+| UC-6 | Support | Answer review | Search review → mark answered |
+| UC-7 | Admin | Create user | Enter username, password, role → `CALL sp_create_user` |
+| UC-8 | Any user | View ER model / schema | Click "ER model & schema" |
+| UC-9 | Manager | Check delivery risk | Open ML page → see high-risk orders, confusion matrix, what-if prediction |
+
+---
+
+## 7. Traceability to course requirements
+
+| Course requirement | Covered by |
+|---|---|
+| Entities, relationships, ER/EER → relational schema | Design §3, `db/01_schema.sql` |
+| Keys, FDs, normalization to 3NF/BCNF | Design §4, `db/14_normalization_demo.sql` |
+| DDL/DML, joins, nested/correlated queries, aggregates, GROUP BY/HAVING | FR-12, `db/09`, `db/12` |
+| Views, indexes, triggers, procedures | FR-6 … FR-10, `db/04`–`07` |
+| Transactions, ACID, concurrency | FR-5, FR-15, `db/10`, `db/11` |
+| Security & RBAC | FR-1, FR-2, FR-16, `db/08` |
+| Front end with insert/search/update/delete/reports and SQL shown | FR-3, FR-4, FR-11 … FR-14 |
+| AI/ML integrated with DB and UI | FR-17, FR-18 |
