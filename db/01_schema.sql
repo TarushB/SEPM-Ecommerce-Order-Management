@@ -72,3 +72,58 @@ CREATE TABLE product (
     width_cm           SMALLINT CHECK (width_cm >= 0),
     stock_qty          INTEGER  NOT NULL DEFAULT 50 CHECK (stock_qty >= 0)  -- added for transaction/concurrency demos
 );
+
+-- ---------------------------------------------------------------------
+-- Orders and their weak entities
+-- ---------------------------------------------------------------------
+CREATE TABLE orders (
+    order_id                CHAR(32)    PRIMARY KEY,
+    customer_id             CHAR(32)    NOT NULL REFERENCES customer_account(customer_id),
+    order_status            VARCHAR(12) NOT NULL
+        CHECK (order_status IN ('created','approved','invoiced','processing',
+                                'shipped','delivered','canceled','unavailable')),
+    purchase_ts             TIMESTAMP   NOT NULL,
+    approved_at             TIMESTAMP,
+    delivered_carrier_date  TIMESTAMP,
+    delivered_customer_date TIMESTAMP,
+    estimated_delivery_date TIMESTAMP   NOT NULL,
+    CONSTRAINT chk_approved_after_purchase  CHECK (approved_at IS NULL OR approved_at >= purchase_ts),
+    CONSTRAINT chk_delivered_after_purchase CHECK (delivered_customer_date IS NULL OR delivered_customer_date >= purchase_ts),
+    CONSTRAINT chk_estimate_after_purchase  CHECK (estimated_delivery_date >= purchase_ts)
+);
+
+CREATE TABLE order_item (
+    order_id            CHAR(32)      NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+    order_item_id       SMALLINT      NOT NULL CHECK (order_item_id >= 1),
+    product_id          CHAR(32)      NOT NULL REFERENCES product(product_id) ON DELETE RESTRICT,
+    seller_id           CHAR(32)      NOT NULL REFERENCES seller(seller_id)   ON DELETE RESTRICT,
+    shipping_limit_date TIMESTAMP,
+    price               NUMERIC(10,2) NOT NULL CHECK (price > 0),
+    freight_value       NUMERIC(10,2) NOT NULL CHECK (freight_value >= 0),
+    PRIMARY KEY (order_id, order_item_id)
+);
+
+CREATE TABLE payment_type (
+    payment_type VARCHAR(15) PRIMARY KEY,
+    description  VARCHAR(80) NOT NULL
+);
+
+CREATE TABLE payment (
+    order_id           CHAR(32)      NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+    payment_sequential SMALLINT      NOT NULL CHECK (payment_sequential >= 1),
+    payment_type       VARCHAR(15)   NOT NULL REFERENCES payment_type(payment_type),
+    installments       SMALLINT      NOT NULL DEFAULT 1 CHECK (installments >= 0),
+    payment_value      NUMERIC(10,2) NOT NULL CHECK (payment_value >= 0),
+    PRIMARY KEY (order_id, payment_sequential)
+);
+
+CREATE TABLE review (
+    review_id       CHAR(32)  NOT NULL,
+    order_id        CHAR(32)  NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+    review_score    SMALLINT  NOT NULL CHECK (review_score BETWEEN 1 AND 5),
+    comment_title   TEXT,
+    comment_message TEXT,
+    creation_date   TIMESTAMP NOT NULL,
+    answer_ts       TIMESTAMP,
+    PRIMARY KEY (review_id, order_id)          -- review_id alone repeats (814 cases)
+);
