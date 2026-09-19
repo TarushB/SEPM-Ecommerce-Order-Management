@@ -127,3 +127,52 @@ CREATE TABLE review (
     answer_ts       TIMESTAMP,
     PRIMARY KEY (review_id, order_id)          -- review_id alone repeats (814 cases)
 );
+
+-- ---------------------------------------------------------------------
+-- System tables: audit log, ML output, application users
+-- ---------------------------------------------------------------------
+CREATE TABLE order_status_log (
+    log_id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id   CHAR(32)    NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+    old_status VARCHAR(12),
+    new_status VARCHAR(12) NOT NULL,
+    changed_at TIMESTAMP   NOT NULL DEFAULT now(),
+    changed_by TEXT        NOT NULL DEFAULT current_user
+);
+
+CREATE TABLE ml_model (
+    model_version VARCHAR(40) PRIMARY KEY,
+    algorithm     VARCHAR(60) NOT NULL,
+    trained_at    TIMESTAMP   NOT NULL DEFAULT now(),
+    train_rows    INTEGER,
+    test_rows     INTEGER,
+    roc_auc       NUMERIC(6,4),
+    pr_auc        NUMERIC(6,4),
+    precision_at_t NUMERIC(6,4),
+    recall_at_t   NUMERIC(6,4),
+    f1_at_t       NUMERIC(6,4),
+    threshold     NUMERIC(6,4),
+    mae_days      NUMERIC(8,3),
+    baseline_mae_days NUMERIC(8,3),
+    is_active     BOOLEAN     NOT NULL DEFAULT false,
+    details       JSONB
+);
+
+CREATE TABLE ml_prediction (
+    order_id         CHAR(32)     PRIMARY KEY REFERENCES orders(order_id) ON DELETE CASCADE,
+    model_version    VARCHAR(40)  NOT NULL REFERENCES ml_model(model_version),
+    late_probability NUMERIC(5,4) NOT NULL CHECK (late_probability BETWEEN 0 AND 1),
+    predicted_days   NUMERIC(6,2),
+    scored_at        TIMESTAMP    NOT NULL DEFAULT now()
+);
+
+CREATE TABLE app_user (
+    user_id       INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    username      VARCHAR(30) NOT NULL UNIQUE,
+    password_hash TEXT        NOT NULL,
+    app_role      VARCHAR(20) NOT NULL
+        CHECK (app_role IN ('admin','manager','analyst','seller','support')),
+    seller_id     CHAR(32)    REFERENCES seller(seller_id),
+    is_active     BOOLEAN     NOT NULL DEFAULT true,
+    CHECK (app_role <> 'seller' OR seller_id IS NOT NULL)
+);
