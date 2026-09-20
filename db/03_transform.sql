@@ -100,3 +100,57 @@ SELECT order_id, customer_id, order_status,
        NULLIF(order_delivered_customer_date, '')::timestamp,
        order_estimated_delivery_date::timestamp
 FROM staging.orders;
+
+-- 8. ORDER_ITEM
+INSERT INTO order_item (order_id, order_item_id, product_id, seller_id,
+                        shipping_limit_date, price, freight_value)
+SELECT order_id, order_item_id::int, product_id, seller_id,
+       shipping_limit_date::timestamp, price::numeric, freight_value::numeric
+FROM staging.order_items;
+
+-- 9. PAYMENT_TYPE lookup and PAYMENT
+INSERT INTO payment_type (payment_type, description) VALUES
+ ('credit_card', 'Credit card, can be split into installments'),
+ ('boleto',      'Boleto bancario (bank payment slip)'),
+ ('voucher',     'Store voucher / gift card'),
+ ('debit_card',  'Debit card'),
+ ('not_defined', 'Payment method not recorded');
+
+INSERT INTO payment (order_id, payment_sequential, payment_type, installments, payment_value)
+SELECT order_id, payment_sequential::int, payment_type,
+       payment_installments::int, payment_value::numeric
+FROM staging.payments;
+
+-- 10. REVIEW (PK is (review_id, order_id) because review_id repeats)
+INSERT INTO review (review_id, order_id, review_score, comment_title, comment_message,
+                    creation_date, answer_ts)
+SELECT review_id, order_id, review_score::int,
+       NULLIF(btrim(review_comment_title), ''),
+       NULLIF(btrim(review_comment_message), ''),
+       review_creation_date::timestamp,
+       NULLIF(review_answer_timestamp, '')::timestamp
+FROM staging.reviews;
+
+COMMIT;
+
+-- Row counts after load
+SELECT 'state' AS table_name, COUNT(*) AS row_count FROM state
+UNION ALL SELECT 'zip_code', COUNT(*) FROM zip_code
+UNION ALL SELECT 'customer', COUNT(*) FROM customer
+UNION ALL SELECT 'customer_account', COUNT(*) FROM customer_account
+UNION ALL SELECT 'seller', COUNT(*) FROM seller
+UNION ALL SELECT 'category', COUNT(*) FROM category
+UNION ALL SELECT 'product', COUNT(*) FROM product
+UNION ALL SELECT 'orders', COUNT(*) FROM orders
+UNION ALL SELECT 'order_item', COUNT(*) FROM order_item
+UNION ALL SELECT 'payment', COUNT(*) FROM payment
+UNION ALL SELECT 'review', COUNT(*) FROM review;
+
+-- Orphan check: every query below must return 0
+SELECT 'items without product' AS check_name, COUNT(*) AS problems
+FROM order_item oi LEFT JOIN product p USING (product_id) WHERE p.product_id IS NULL
+UNION ALL
+SELECT 'orders without customer', COUNT(*)
+FROM orders o LEFT JOIN customer_account c USING (customer_id) WHERE c.customer_id IS NULL;
+
+ANALYZE;
