@@ -52,3 +52,51 @@ FROM (
 ) x
 WHERE NOT EXISTS (SELECT 1 FROM zip_code z WHERE z.zip_prefix = x.zip)
 ORDER BY zip, city;
+
+-- 3. CUSTOMER (the real person) and CUSTOMER_ACCOUNT (per-order customer_id)
+INSERT INTO customer (customer_unique_id)
+SELECT DISTINCT customer_unique_id FROM staging.customers;
+
+INSERT INTO customer_account (customer_id, customer_unique_id, zip_prefix)
+SELECT customer_id, customer_unique_id, customer_zip_code_prefix::int
+FROM staging.customers;
+
+-- 4. SELLER
+INSERT INTO seller (seller_id, zip_prefix)
+SELECT seller_id, seller_zip_code_prefix::int FROM staging.sellers;
+
+-- 5. CATEGORY (+ the 2 categories missing from the translation file)
+INSERT INTO category (category_name, category_name_en)
+SELECT product_category_name, product_category_name_english
+FROM staging.category_translation;
+
+INSERT INTO category (category_name, category_name_en) VALUES
+ ('pc_gamer', 'pc_gamer'),
+ ('portateis_cozinha_e_preparadores_de_alimentos', 'portable_kitchen_food_preparers')
+ON CONFLICT DO NOTHING;
+
+-- 6. PRODUCT (fixes the "lenght" typos; 610 uncategorised products keep NULL)
+INSERT INTO product (product_id, category_name, name_length, description_length,
+                     photos_qty, weight_g, length_cm, height_cm, width_cm, stock_qty)
+SELECT product_id,
+       NULLIF(product_category_name, ''),
+       NULLIF(product_name_lenght, '')::numeric::int,
+       NULLIF(product_description_lenght, '')::numeric::int,
+       NULLIF(product_photos_qty, '')::numeric::int,
+       NULLIF(product_weight_g, '')::numeric::int,
+       NULLIF(product_length_cm, '')::numeric::int,
+       NULLIF(product_height_cm, '')::numeric::int,
+       NULLIF(product_width_cm, '')::numeric::int,
+       20 + abs(hashtext(product_id)) % 181          -- deterministic demo stock 20..200
+FROM staging.products;
+
+-- 7. ORDERS
+INSERT INTO orders (order_id, customer_id, order_status, purchase_ts, approved_at,
+                    delivered_carrier_date, delivered_customer_date, estimated_delivery_date)
+SELECT order_id, customer_id, order_status,
+       order_purchase_timestamp::timestamp,
+       NULLIF(order_approved_at, '')::timestamp,
+       NULLIF(order_delivered_carrier_date, '')::timestamp,
+       NULLIF(order_delivered_customer_date, '')::timestamp,
+       order_estimated_delivery_date::timestamp
+FROM staging.orders;
