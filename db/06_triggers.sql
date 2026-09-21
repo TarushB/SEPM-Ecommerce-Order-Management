@@ -42,3 +42,27 @@ DROP TRIGGER IF EXISTS trg_validate_status_transition ON orders;
 CREATE TRIGGER trg_validate_status_transition
     BEFORE UPDATE OF order_status ON orders
     FOR EACH ROW EXECUTE FUNCTION trg_validate_status_transition();
+
+-- ---------------------------------------------------------------------
+-- 2. Audit trail: every status change (and every new order) is logged.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION trg_order_status_log() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    -- the role that made the change (SET ROLE value), not the function owner
+    v_who TEXT := COALESCE(NULLIF(current_setting('role', true), 'none'), session_user);
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO order_status_log(order_id, old_status, new_status, changed_by)
+        VALUES (NEW.order_id, NULL, NEW.order_status, v_who);
+    ELSIF NEW.order_status IS DISTINCT FROM OLD.order_status THEN
+        INSERT INTO order_status_log(order_id, old_status, new_status, changed_by)
+        VALUES (NEW.order_id, OLD.order_status, NEW.order_status, v_who);
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_order_status_log ON orders;
+CREATE TRIGGER trg_order_status_log
+    AFTER INSERT OR UPDATE OF order_status ON orders
+    FOR EACH ROW EXECUTE FUNCTION trg_order_status_log();
