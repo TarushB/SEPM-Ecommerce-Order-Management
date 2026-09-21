@@ -66,3 +66,47 @@ DROP TRIGGER IF EXISTS trg_order_status_log ON orders;
 CREATE TRIGGER trg_order_status_log
     AFTER INSERT OR UPDATE OF order_status ON orders
     FOR EACH ROW EXECUTE FUNCTION trg_order_status_log();
+
+-- ---------------------------------------------------------------------
+-- 3. A review can only be written for an order that was delivered
+--    (or canceled/unavailable, so customers can complain).
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION trg_review_only_after_delivery() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE v_status TEXT;
+BEGIN
+    SELECT order_status INTO v_status FROM orders WHERE order_id = NEW.order_id;
+    IF v_status NOT IN ('delivered','canceled','unavailable') THEN
+        RAISE EXCEPTION 'Order % is still "%": it can be reviewed only after delivery',
+              NEW.order_id, v_status USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_review_only_after_delivery ON review;
+CREATE TRIGGER trg_review_only_after_delivery
+    BEFORE INSERT ON review
+    FOR EACH ROW EXECUTE FUNCTION trg_review_only_after_delivery();
+
+-- ---------------------------------------------------------------------
+-- 4. Delivered orders are business records: they can never be deleted.
+--    Other orders can be deleted only if nothing has been paid.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION trg_block_order_delete() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.order_status = 'delivered' THEN
+        RAISE EXCEPTION 'Order % was delivered and cannot be deleted', OLD.order_id
+              USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF EXISTS (SELECT 1 FROM payment WHERE order_id = OLD.order_id AND payment_value > 0) THEN
+        RAISE EXCEPTION 'Order % has payments; cancel it instead of deleting it', OLD.order_id
+              USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN OLD;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_block_order_delete ON orders;
+CREATE TRIGGER trg_block_order_delete
+    BEFORE DELETE ON orders
+    FOR EACH ROW EXECUTE FUNCTION trg_block_order_delete();
