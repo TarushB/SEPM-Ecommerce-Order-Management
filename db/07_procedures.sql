@@ -74,3 +74,43 @@ BEGIN
     INSERT INTO payment(order_id, payment_sequential, payment_type, installments, payment_value)
     VALUES (p_order_id, 1, p_payment_type, GREATEST(p_installments, 1), v_total);
 END $$;
+
+-- ---------------------------------------------------------------------
+-- sp_update_status: moves an order forward and stamps the matching date.
+-- The transition rule itself lives in trigger trg_validate_status_transition.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE sp_update_status(p_order_id CHAR(32), p_new_status VARCHAR)
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE orders
+       SET order_status            = p_new_status,
+           approved_at             = CASE WHEN p_new_status = 'approved'  THEN now()::timestamp(0) ELSE approved_at END,
+           delivered_carrier_date  = CASE WHEN p_new_status = 'shipped'   THEN now()::timestamp(0) ELSE delivered_carrier_date END,
+           delivered_customer_date = CASE WHEN p_new_status = 'delivered' THEN now()::timestamp(0) ELSE delivered_customer_date END
+     WHERE order_id = p_order_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Order % not found', p_order_id USING ERRCODE = 'no_data_found';
+    END IF;
+END $$;
+
+-- ---------------------------------------------------------------------
+-- sp_cancel_order: cancel + give the stock back, in one transaction.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE sp_cancel_order(p_order_id CHAR(32))
+LANGUAGE plpgsql AS $$
+DECLARE v_status TEXT;
+BEGIN
+    SELECT order_status INTO v_status FROM orders WHERE order_id = p_order_id FOR UPDATE;
+    IF v_status IS NULL THEN
+        RAISE EXCEPTION 'Order % not found', p_order_id USING ERRCODE = 'no_data_found';
+    END IF;
+    IF v_status IN ('shipped','delivered') THEN
+        RAISE EXCEPTION 'Order % is already %, it cannot be canceled', p_order_id, v_status
+              USING ERRCODE = 'check_violation';
+    END IF;
+    UPDATE orders SET order_status = 'canceled' WHERE order_id = p_order_id;
+    UPDATE product p SET stock_qty = p.stock_qty + x.n
+      FROM (SELECT product_id, COUNT(*) AS n FROM order_item
+             WHERE order_id = p_order_id GROUP BY product_id) x
+     WHERE p.product_id = x.product_id;
+END $$;
