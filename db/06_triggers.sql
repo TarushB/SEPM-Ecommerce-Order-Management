@@ -110,3 +110,38 @@ DROP TRIGGER IF EXISTS trg_block_order_delete ON orders;
 CREATE TRIGGER trg_block_order_delete
     BEFORE DELETE ON orders
     FOR EACH ROW EXECUTE FUNCTION trg_block_order_delete();
+
+-- ---------------------------------------------------------------------
+-- 5. When an order changes, its stored ML prediction is stale: drop it
+--    so the scoring job re-scores the order.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION trg_invalidate_prediction() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.order_status IN ('delivered','canceled','unavailable')
+       OR NEW.estimated_delivery_date IS DISTINCT FROM OLD.estimated_delivery_date THEN
+        DELETE FROM ml_prediction WHERE order_id = NEW.order_id;
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_invalidate_prediction ON orders;
+CREATE TRIGGER trg_invalidate_prediction
+    AFTER UPDATE ON orders
+    FOR EACH ROW EXECUTE FUNCTION trg_invalidate_prediction();
+
+-- ---------------------------------------------------------------------
+-- 6. Stock control: selling an item reduces product stock; the CHECK
+--    (stock_qty >= 0) then makes overselling impossible.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION trg_reduce_stock() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE product SET stock_qty = stock_qty - 1 WHERE product_id = NEW.product_id;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_reduce_stock ON order_item;
+CREATE TRIGGER trg_reduce_stock
+    AFTER INSERT ON order_item
+    FOR EACH ROW EXECUTE FUNCTION trg_reduce_stock();
