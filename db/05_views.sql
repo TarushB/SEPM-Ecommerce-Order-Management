@@ -64,3 +64,35 @@ CREATE OR REPLACE VIEW v_customer_public AS
 SELECT ca.customer_id, ca.customer_unique_id, z.city, z.state_code
 FROM customer_account ca
 JOIN zip_code z ON z.zip_prefix = ca.zip_prefix;
+
+-- Data-quality exceptions kept visible instead of silently deleted.
+CREATE OR REPLACE VIEW v_data_quality AS
+SELECT 'order without items' AS issue, o.order_id::text AS ref, o.order_status AS detail
+FROM orders o WHERE NOT EXISTS (SELECT 1 FROM order_item oi WHERE oi.order_id = o.order_id)
+UNION ALL
+SELECT 'order without payment', o.order_id, o.order_status
+FROM orders o WHERE NOT EXISTS (SELECT 1 FROM payment p WHERE p.order_id = o.order_id)
+UNION ALL
+SELECT 'handed to carrier before purchase', o.order_id, o.delivered_carrier_date::text
+FROM orders o WHERE o.delivered_carrier_date < o.purchase_ts
+UNION ALL
+SELECT 'delivered before handed to carrier', o.order_id, o.delivered_customer_date::text
+FROM orders o WHERE o.delivered_customer_date < o.delivered_carrier_date
+UNION ALL
+SELECT 'zip prefix without coordinates', z.zip_prefix::text, z.city
+FROM zip_code z WHERE z.lat IS NULL
+UNION ALL
+SELECT 'payment total differs from items by > R$1', t.order_id, t.diff::text
+FROM (SELECT o.order_id,
+             (SELECT SUM(payment_value) FROM payment p WHERE p.order_id = o.order_id) -
+             (SELECT SUM(price + freight_value) FROM order_item i WHERE i.order_id = o.order_id) AS diff
+      FROM orders o) t
+WHERE abs(t.diff) > 1;
+
+-- Updatable view WITH CHECK OPTION: support staff for Sao Paulo can only
+-- insert/update customer accounts whose zip prefix belongs to SP.
+CREATE OR REPLACE VIEW v_sp_customers AS
+SELECT ca.customer_id, ca.customer_unique_id, ca.zip_prefix
+FROM customer_account ca
+WHERE ca.zip_prefix IN (SELECT zip_prefix FROM zip_code WHERE state_code = 'SP')
+WITH CHECK OPTION;
