@@ -68,3 +68,69 @@ GRANT SELECT ON v_customer_public, v_order_details, orders, order_item, product,
       category, payment, payment_type, review, order_status_log, state TO olist_support;
 GRANT SELECT (zip_prefix, city, state_code) ON zip_code TO olist_support;
 GRANT UPDATE (answer_ts) ON review TO olist_support;
+
+-- 7. seller: only their own orders (row-level security below) --------------
+GRANT SELECT ON orders, order_item, product, category, review, payment_type TO olist_seller;
+GRANT SELECT (zip_prefix, city, state_code) ON zip_code TO olist_seller;
+GRANT SELECT ON seller, state, v_customer_public TO olist_seller;
+GRANT UPDATE (order_status, approved_at, delivered_carrier_date, delivered_customer_date)
+      ON orders TO olist_seller;
+GRANT EXECUTE ON PROCEDURE sp_update_status TO olist_seller;
+
+-- 8. Row-level security ------------------------------------------------------
+--    The app sets the seller's id with:  SELECT set_config('app.seller_id', '<id>', false)
+ALTER TABLE orders     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE order_item ENABLE ROW LEVEL SECURITY;
+ALTER TABLE review     ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS p_staff  ON orders;
+DROP POLICY IF EXISTS p_seller ON orders;
+DROP POLICY IF EXISTS p_staff  ON order_item;
+DROP POLICY IF EXISTS p_seller ON order_item;
+DROP POLICY IF EXISTS p_staff  ON review;
+DROP POLICY IF EXISTS p_seller ON review;
+
+CREATE POLICY p_staff ON orders
+    TO olist_admin, olist_manager, olist_analyst, olist_support USING (true) WITH CHECK (true);
+CREATE POLICY p_seller ON orders TO olist_seller
+    USING (EXISTS (SELECT 1 FROM order_item oi
+                   WHERE oi.order_id = orders.order_id
+                     AND oi.seller_id = current_setting('app.seller_id', true)));
+
+CREATE POLICY p_staff ON order_item
+    TO olist_admin, olist_manager, olist_analyst, olist_support USING (true) WITH CHECK (true);
+CREATE POLICY p_seller ON order_item TO olist_seller
+    USING (seller_id = current_setting('app.seller_id', true));
+
+CREATE POLICY p_staff ON review
+    TO olist_admin, olist_manager, olist_analyst, olist_support USING (true) WITH CHECK (true);
+CREATE POLICY p_seller ON review TO olist_seller
+    USING (EXISTS (SELECT 1 FROM order_item oi
+                   WHERE oi.order_id = review.order_id
+                     AND oi.seller_id = current_setting('app.seller_id', true)));
+
+-- 9. Trigger functions that write to system tables run as their owner, so
+--    a seller changing a status can still write the audit row.
+ALTER FUNCTION trg_order_status_log()      SECURITY DEFINER;
+ALTER FUNCTION trg_invalidate_prediction() SECURITY DEFINER;
+ALTER FUNCTION trg_reduce_stock()          SECURITY DEFINER;
+ALTER PROCEDURE sp_refresh_reports()       SECURITY DEFINER;
+
+-- 10. Login is only possible through fn_login (password check in the DB) ---
+GRANT EXECUTE ON FUNCTION fn_login(TEXT, TEXT) TO olist_app;
+
+-- 11. Demo application users (password = username + '123') ---------------
+CALL sp_create_user('admin',   'admin123',   'admin');
+CALL sp_create_user('manager', 'manager123', 'manager');
+CALL sp_create_user('analyst', 'analyst123', 'analyst');
+CALL sp_create_user('support', 'support123', 'support');
+DO $$
+DECLARE v_seller CHAR(32);
+BEGIN
+    -- the seller with the most orders becomes the demo seller account
+    SELECT seller_id INTO v_seller FROM order_item
+    GROUP BY seller_id ORDER BY COUNT(DISTINCT order_id) DESC LIMIT 1;
+    CALL sp_create_user('seller', 'seller123', 'seller', v_seller);
+END $$;
+
+SELECT username, app_role, seller_id, left(password_hash, 7) || '...' AS hash_prefix FROM app_user ORDER BY user_id;
