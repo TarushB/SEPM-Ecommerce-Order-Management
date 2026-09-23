@@ -114,3 +114,57 @@ BEGIN
              WHERE order_id = p_order_id GROUP BY product_id) x
      WHERE p.product_id = x.product_id;
 END $$;
+
+-- ---------------------------------------------------------------------
+-- Scalar functions used in queries and screens
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_order_total(p_order_id CHAR(32)) RETURNS NUMERIC
+LANGUAGE sql STABLE AS $$
+    SELECT COALESCE(SUM(price + freight_value), 0) FROM order_item WHERE order_id = p_order_id
+$$;
+
+CREATE OR REPLACE FUNCTION fn_seller_rating(p_seller_id CHAR(32)) RETURNS NUMERIC
+LANGUAGE sql STABLE AS $$
+    SELECT ROUND(AVG(r.review_score), 2)
+    FROM review r
+    WHERE r.order_id IN (SELECT order_id FROM order_item WHERE seller_id = p_seller_id)
+$$;
+
+CREATE OR REPLACE FUNCTION fn_delivery_days(p_order_id CHAR(32)) RETURNS NUMERIC
+LANGUAGE sql STABLE AS $$
+    SELECT ROUND(EXTRACT(EPOCH FROM delivered_customer_date - purchase_ts) / 86400, 1)
+    FROM orders WHERE order_id = p_order_id
+$$;
+
+-- Refresh the materialized views (run after bulk changes / before training)
+CREATE OR REPLACE PROCEDURE sp_refresh_reports()
+LANGUAGE plpgsql AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW mv_seller_delivery_history;
+    REFRESH MATERIALIZED VIEW mv_order_features;
+END $$;
+
+-- ---------------------------------------------------------------------
+-- fn_login: checks a password against the bcrypt hash INSIDE the database.
+-- SECURITY DEFINER lets the low-privilege app role call it without being
+-- able to read app_user (so password hashes never leave the DB).
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_login(p_username TEXT, p_password TEXT)
+RETURNS TABLE(user_id INT, username VARCHAR, app_role VARCHAR, seller_id CHAR(32))
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT u.user_id, u.username, u.app_role, u.seller_id
+    FROM app_user u
+    WHERE u.username = p_username
+      AND u.is_active
+      AND u.password_hash = crypt(p_password, u.password_hash)
+$$;
+
+CREATE OR REPLACE PROCEDURE sp_create_user(p_username TEXT, p_password TEXT,
+                                           p_role TEXT, p_seller_id CHAR(32) DEFAULT NULL)
+LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
+    INSERT INTO app_user(username, password_hash, app_role, seller_id)
+    VALUES (p_username, crypt(p_password, gen_salt('bf', 8)), p_role, p_seller_id)
+    ON CONFLICT (username) DO UPDATE
+       SET password_hash = EXCLUDED.password_hash, app_role = EXCLUDED.app_role,
+           seller_id = EXCLUDED.seller_id, is_active = true;
+$$;
