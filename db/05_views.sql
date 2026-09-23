@@ -96,3 +96,125 @@ SELECT ca.customer_id, ca.customer_unique_id, ca.zip_prefix
 FROM customer_account ca
 WHERE ca.zip_prefix IN (SELECT zip_prefix FROM zip_code WHERE state_code = 'SP')
 WITH CHECK OPTION;
+
+-- ---------------------------------------------------------------------
+-- Feature view: one row per order with every ML feature that is
+-- known at purchase time, plus the two labels (NULL until delivered).
+-- ---------------------------------------------------------------------
+-- Helper: running totals of each seller's delivered orders, in delivery
+-- order. mv_order_features looks up "the last row before this purchase"
+-- with one index probe instead of re-scanning the seller's history.
+CREATE MATERIALIZED VIEW mv_seller_delivery_history AS
+WITH seller_orders AS (
+    SELECT DISTINCT oi.seller_id, o.order_id, o.delivered_customer_date AS delivered_at,
+           (o.delivered_customer_date > o.estimated_delivery_date)::int AS was_late
+    FROM order_item oi
+    JOIN orders o ON o.order_id = oi.order_id
+    WHERE o.delivered_customer_date IS NOT NULL
+)
+SELECT seller_id, delivered_at, order_id,
+       COUNT(*)      OVER w AS cum_orders,
+       SUM(was_late) OVER w AS cum_late
+FROM seller_orders
+WINDOW w AS (PARTITION BY seller_id ORDER BY delivered_at, order_id
+             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW);
+
+CREATE UNIQUE INDEX ux_seller_history ON mv_seller_delivery_history(seller_id, delivered_at, order_id);
+
+CREATE OR REPLACE VIEW v_order_features AS
+WITH items AS (
+    SELECT oi.order_id,
+           COUNT(*)                                   AS n_items,
+           COUNT(DISTINCT oi.seller_id)               AS n_sellers,
+           SUM(oi.price)                              AS total_price,
+           SUM(oi.freight_value)                      AS total_freight,
+           SUM(COALESCE(p.weight_g, 0))               AS total_weight_g,
+           SUM(COALESCE(p.length_cm::bigint * p.height_cm * p.width_cm, 0)) AS total_volume_cm3,
+           MIN(oi.shipping_limit_date)                AS first_shipping_limit,
+           (ARRAY_AGG(oi.seller_id ORDER BY oi.price DESC, oi.order_item_id))[1]      AS main_seller_id,
+           (ARRAY_AGG(COALESCE(c.category_name_en,'unknown')
+                      ORDER BY oi.price DESC, oi.order_item_id))[1]                  AS main_category
+    FROM order_item oi
+    JOIN product p       ON p.product_id = oi.product_id
+    LEFT JOIN category c ON c.category_name = p.category_name
+    GROUP BY oi.order_id
+), pay AS (
+    SELECT order_id,
+           (ARRAY_AGG(payment_type ORDER BY payment_sequential))[1] AS payment_type,
+           MAX(installments)                                         AS installments
+    FROM payment GROUP BY order_id
+), base AS (
+    SELECT o.order_id, o.order_status, o.purchase_ts, o.estimated_delivery_date,
+           o.delivered_customer_date,
+           i.n_items, i.n_sellers, i.total_price, i.total_freight, i.total_weight_g,
+           i.total_volume_cm3, i.first_shipping_limit, i.main_seller_id, i.main_category,
+           pay.payment_type, pay.installments,
+           cz.state_code AS customer_state, cs.region AS customer_region,
+           sz.state_code AS seller_state,
+           cz.lat AS c_lat, cz.lng AS c_lng, sz.lat AS s_lat, sz.lng AS s_lng
+    FROM orders o
+    JOIN items i              ON i.order_id = o.order_id
+    LEFT JOIN pay             ON pay.order_id = o.order_id
+    JOIN customer_account ca  ON ca.customer_id = o.customer_id
+    JOIN zip_code cz          ON cz.zip_prefix = ca.zip_prefix
+    JOIN state cs             ON cs.state_code = cz.state_code
+    JOIN seller s             ON s.seller_id = i.main_seller_id
+    JOIN zip_code sz          ON sz.zip_prefix = s.zip_prefix
+)
+SELECT b.order_id,
+       b.order_status,
+       b.purchase_ts,
+       -- geography
+       b.customer_state, b.customer_region, b.seller_state,
+       (b.customer_state = b.seller_state)::int                          AS same_state,
+       ROUND((6371 * 2 * ASIN(SQRT(
+             POWER(SIN(RADIANS(b.s_lat - b.c_lat) / 2), 2) +
+             COS(RADIANS(b.c_lat)) * COS(RADIANS(b.s_lat)) *
+             POWER(SIN(RADIANS(b.s_lng - b.c_lng) / 2), 2))))::numeric, 1)   AS distance_km,
+       -- order
+       b.n_items, b.n_sellers, b.total_price, b.total_freight,
+       ROUND(b.total_freight / NULLIF(b.total_price, 0), 4)              AS freight_ratio,
+       COALESCE(b.payment_type, 'not_defined')                          AS payment_type,
+       COALESCE(b.installments, 1)                                      AS installments,
+       -- product
+       b.total_weight_g, b.total_volume_cm3, b.main_category,
+       -- time
+       EXTRACT(MONTH FROM b.purchase_ts)::int                           AS purchase_month,
+       EXTRACT(ISODOW FROM b.purchase_ts)::int                          AS purchase_dow,
+       EXTRACT(HOUR FROM b.purchase_ts)::int                            AS purchase_hour,
+       ROUND(EXTRACT(EPOCH FROM b.estimated_delivery_date - b.purchase_ts) / 86400, 2) AS promised_days,
+       ROUND(EXTRACT(EPOCH FROM b.first_shipping_limit - b.purchase_ts) / 86400, 2)    AS ship_limit_days,
+       -- seller history: only orders of this seller DELIVERED before this purchase (no leakage)
+       COALESCE(sh.prior_orders, 0)                                     AS seller_prior_orders,
+       sh.prior_late_rate                                               AS seller_prior_late_rate,
+       -- labels
+       CASE WHEN b.order_status = 'delivered' AND b.delivered_customer_date IS NOT NULL
+            THEN (b.delivered_customer_date > b.estimated_delivery_date)::int END        AS is_late,
+       CASE WHEN b.order_status = 'delivered' AND b.delivered_customer_date IS NOT NULL
+            THEN ROUND(EXTRACT(EPOCH FROM b.delivered_customer_date - b.purchase_ts) / 86400, 2) END
+                                                                        AS delivery_days
+FROM base b
+LEFT JOIN LATERAL (
+    SELECT h.cum_orders::int                            AS prior_orders,
+           ROUND(h.cum_late::numeric / h.cum_orders, 4)  AS prior_late_rate
+    FROM mv_seller_delivery_history h
+    WHERE h.seller_id = b.main_seller_id
+      AND h.delivered_at < b.purchase_ts
+    ORDER BY h.delivered_at DESC, h.order_id DESC
+    LIMIT 1
+) sh ON true;
+
+-- Materialized copy for training / reporting; the plain view above answers
+-- live questions about a single (possibly brand-new) order.
+CREATE MATERIALIZED VIEW mv_order_features AS SELECT * FROM v_order_features;
+CREATE UNIQUE INDEX ux_mv_order_features ON mv_order_features(order_id);
+
+-- ML output joined back to business data: managers query risk with plain SQL.
+CREATE OR REPLACE VIEW v_high_risk_orders AS
+SELECT mp.order_id, o.order_status, o.purchase_ts, o.estimated_delivery_date,
+       f.customer_state, f.seller_state, f.distance_km, f.main_category,
+       mp.late_probability, mp.predicted_days, mp.model_version
+FROM ml_prediction mp
+JOIN orders o             ON o.order_id = mp.order_id
+LEFT JOIN mv_order_features f ON f.order_id = mp.order_id
+WHERE o.order_status NOT IN ('delivered','canceled','unavailable');
