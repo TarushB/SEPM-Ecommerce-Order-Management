@@ -692,3 +692,244 @@ def seller_delete(user, sid):
     with session(user) as s:
         res = s.run("DELETE FROM seller WHERE seller_id = %(id)s", {"id": check_id(sid)}, label="delete seller")
         return ok({"deleted": res["row_count"]}, s)
+
+
+# ---------------------------------------------------------------------------
+# REVIEWS
+# ---------------------------------------------------------------------------
+@app.get("/api/reviews")
+@api()
+def reviews_search(user):
+    f, p = [], {}
+    if arg("word"):
+        f.append(("word", "to_tsvector('portuguese', coalesce(r.comment_title,'') || ' ' || coalesce(r.comment_message,''))"
+                          " @@ plainto_tsquery('portuguese', %(word)s)"))
+        p["word"] = arg("word")
+    if arg("score"):
+        f.append(("score", "r.review_score = %(score)s")); p["score"] = arg("score", cast=int)
+    if arg("order_id"):
+        f.append(("order_id", "r.order_id = %(oid)s")); p["oid"] = check_id(arg("order_id"))
+    if arg("unanswered") == "yes":
+        f.append(("unanswered", "r.answer_ts IS NULL"))
+    if arg("has_comment") == "yes":
+        f.append(("has_comment", "r.comment_message IS NOT NULL"))
+    where = [c for _, c in f]
+    q = dict(p, limit=50, offset=50 * arg("page", 0, int))
+    sql = f"""
+SELECT r.review_id, r.order_id, r.review_score, r.comment_title, r.comment_message,
+       r.creation_date, r.answer_ts
+FROM review r
+{"WHERE " + chr(10) + "  AND ".join(where) if where else ""}
+ORDER BY r.creation_date DESC
+LIMIT %(limit)s OFFSET %(offset)s"""
+    with session(user, read_only=True) as s:
+        rows = s.all(sql, q, label="search reviews")
+        facets = None
+        if arg("facets") == "1":
+            facets = facet_counts(s, "review r", f, {
+                "score": "r.review_score",
+                "has_comment": "CASE WHEN r.comment_message IS NOT NULL THEN 'yes' END",
+                "unanswered": "CASE WHEN r.answer_ts IS NULL THEN 'yes' END",
+            }, p)
+        return ok(rows, s, facets=facets)
+
+
+@app.post("/api/reviews")
+@api(roles=["admin", "manager"])
+def review_create(user):
+    b = body()
+    p = {"rid": new_id(), "oid": check_id(b.get("order_id")), "score": int(b["review_score"]),
+         "title": b.get("comment_title") or None, "msg": b.get("comment_message") or None}
+    with session(user) as s:
+        row = s.one("""INSERT INTO review(review_id, order_id, review_score, comment_title, comment_message, creation_date)
+VALUES (%(rid)s, %(oid)s, %(score)s, %(title)s, %(msg)s, now())
+RETURNING *""", p, label="insert review (trigger checks the order was delivered)")
+        return ok(row, s)
+
+
+@app.put("/api/reviews/<rid>/<oid>")
+@api(roles=["admin", "manager", "support"])
+def review_update(user, rid, oid):
+    b = body()
+    p = {"rid": check_id(rid), "oid": check_id(oid)}
+    with session(user) as s:
+        if b.get("answer"):
+            row = s.one("UPDATE review SET answer_ts = now() WHERE review_id = %(rid)s AND order_id = %(oid)s "
+                        "RETURNING review_id, order_id, answer_ts", p, label="mark review answered")
+        else:
+            p["score"] = int(b["review_score"])
+            row = s.one("UPDATE review SET review_score = %(score)s WHERE review_id = %(rid)s AND order_id = %(oid)s "
+                        "RETURNING review_id, order_id, review_score", p, label="change score")
+        return ok(row, s)
+
+
+@app.delete("/api/reviews/<rid>/<oid>")
+@api(roles=["admin", "manager"])
+def review_delete(user, rid, oid):
+    with session(user) as s:
+        res = s.run("DELETE FROM review WHERE review_id = %(rid)s AND order_id = %(oid)s",
+                    {"rid": check_id(rid), "oid": check_id(oid)}, label="delete review")
+        return ok({"deleted": res["row_count"]}, s)
+
+
+# ---------------------------------------------------------------------------
+# CATEGORIES
+# ---------------------------------------------------------------------------
+@app.get("/api/categories")
+@api()
+def categories_list(user):
+    with session(user, read_only=True) as s:
+        rows = s.all("""
+SELECT c.category_name, c.category_name_en, COUNT(p.product_id) AS products
+FROM category c LEFT JOIN product p ON p.category_name = c.category_name
+GROUP BY c.category_name, c.category_name_en
+ORDER BY products DESC""", label="categories with product counts")
+        return ok(rows, s)
+
+
+@app.post("/api/categories")
+@api(roles=["admin", "manager"])
+def category_create(user):
+    b = body()
+    with session(user) as s:
+        row = s.one("INSERT INTO category(category_name, category_name_en) VALUES (%(pt)s, %(en)s) RETURNING *",
+                    {"pt": b["category_name"].strip().lower(), "en": b["category_name_en"].strip().lower()},
+                    label="insert category")
+        return ok(row, s)
+
+
+@app.put("/api/categories/<name>")
+@api(roles=["admin", "manager"])
+def category_update(user, name):
+    with session(user) as s:
+        row = s.one("UPDATE category SET category_name_en = %(en)s WHERE category_name = %(pt)s RETURNING *",
+                    {"en": body()["category_name_en"].strip().lower(), "pt": name}, label="rename category")
+        return ok(row, s)
+
+
+@app.delete("/api/categories/<name>")
+@api(roles=["admin", "manager"])
+def category_delete(user, name):
+    with session(user) as s:
+        res = s.run("DELETE FROM category WHERE category_name = %(pt)s", {"pt": name}, label="delete category")
+        return ok({"deleted": res["row_count"]}, s)
+
+
+# ---------------------------------------------------------------------------
+# REPORTS (Q1-Q16), EXPLAIN, SQL console
+# ---------------------------------------------------------------------------
+@app.get("/api/reports")
+@api()
+def reports_list(user):
+    return jsonify({"ok": True, "data": [{k: q[k] for k in ("id", "title", "concept", "params", "sql")} for q in QUERIES]})
+
+
+def _report_params(q, given):
+    params = {}
+    for k, default in q["params"].items():
+        v = given.get(k, default)
+        params[k] = type(default)(v) if v not in (None, "") else default
+    return params
+
+
+@app.post("/api/reports/<qid>")
+@api()
+def report_run(user, qid):
+    q = QUERY_BY_ID.get(qid)
+    if not q:
+        return fail("Unknown report", 404)
+    with session(user, read_only=True) as s:
+        res = s.run(q["sql"], _report_params(q, body()), label=f"{q['id']} - {q['concept']}")
+        return ok(res, s)
+
+
+@app.post("/api/reports/<qid>/explain")
+@api()
+def report_explain(user, qid):
+    q = QUERY_BY_ID.get(qid)
+    if not q:
+        return fail("Unknown report", 404)
+    with session(user, read_only=True) as s:
+        res = s.run("EXPLAIN (ANALYZE, COSTS OFF, SUMMARY ON) " + q["sql"].strip(), _report_params(q, body()),
+                    label="query plan")
+        return ok({"plan": "\n".join(r["QUERY PLAN"] for r in res["rows"])}, s)
+
+
+@app.get("/api/reports/<qid>/csv")
+@api()
+def report_csv(user, qid):
+    import csv
+    import io
+    q = QUERY_BY_ID.get(qid)
+    if not q:
+        return fail("Unknown report", 404)
+    with session(user, read_only=True) as s:
+        res = s.run(q["sql"], _report_params(q, request.args), max_rows=100000)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(res["columns"])
+    for r in res["rows"]:
+        w.writerow([r[c] for c in res["columns"]])
+    return app.response_class(buf.getvalue(), mimetype="text/csv",
+                              headers={"Content-Disposition": f"attachment; filename={qid}.csv"})
+
+
+@app.post("/api/sql")
+@api(roles=["admin", "manager", "analyst"])
+def sql_console(user):
+    sql = (body().get("sql") or "").strip().rstrip(";")
+    if not re.match(r"^(select|with|explain|show|table|values)\b", sql, re.I) or ";" in sql:
+        return fail("The console accepts one read-only statement (SELECT / WITH / EXPLAIN / SHOW).", 400)
+    with session(user, read_only=True) as s:
+        return ok(s.run(sql, label="console"), s)
+
+
+# ---------------------------------------------------------------------------
+# SCHEMA / ER model (read from the live catalog)
+# ---------------------------------------------------------------------------
+@app.get("/api/schema")
+@api()
+def schema(user):
+    with session(user, read_only=True) as s:
+        cols = s.all("""
+SELECT c.table_name, c.column_name, c.data_type, c.character_maximum_length AS max_len,
+       c.is_nullable, c.column_default,
+       EXISTS (SELECT 1 FROM information_schema.table_constraints tc
+               JOIN information_schema.key_column_usage k
+                 ON k.constraint_name = tc.constraint_name AND k.table_name = tc.table_name
+               WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = c.table_name
+                 AND k.column_name = c.column_name) AS is_pk
+FROM information_schema.columns c
+JOIN information_schema.tables t ON t.table_name = c.table_name AND t.table_schema = c.table_schema
+WHERE c.table_schema = 'public' AND t.table_type = 'BASE TABLE'
+ORDER BY c.table_name, c.ordinal_position""", label="columns + primary keys", max_rows=1000)
+        fks = s.all("""
+SELECT conrelid::regclass::text AS table_name, conname AS constraint_name,
+       pg_get_constraintdef(oid) AS definition
+FROM pg_constraint
+WHERE contype IN ('f','c','u') AND connamespace = 'public'::regnamespace
+ORDER BY 1, contype, 2""", label="foreign keys, CHECK and UNIQUE constraints", max_rows=1000)
+        counts = s.all("""
+SELECT relname AS table_name, reltuples::bigint AS approx_rows
+FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' ORDER BY 1""", label="row estimates")
+        objects = s.all("""
+SELECT 'view' AS kind, table_name AS name FROM information_schema.views WHERE table_schema = 'public'
+UNION ALL SELECT 'materialized view', matviewname FROM pg_matviews WHERE schemaname = 'public'
+UNION ALL SELECT 'trigger', trigger_name || ' ON ' || event_object_table || ' (' ||
+                 string_agg(event_manipulation, '/') || ')' FROM information_schema.triggers
+          WHERE trigger_schema = 'public' GROUP BY trigger_name, event_object_table
+UNION ALL SELECT CASE p.prokind WHEN 'p' THEN 'procedure' ELSE 'function' END,
+                 p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')'
+          FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace
+            AND p.proname NOT LIKE 'trg_%' AND p.proname NOT IN (SELECT extname FROM pg_extension)
+            AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')
+UNION ALL SELECT 'index', indexname || ' ON ' || tablename FROM pg_indexes WHERE schemaname = 'public'
+UNION ALL SELECT 'RLS policy', policyname || ' ON ' || tablename || ' TO ' || array_to_string(roles, ',')
+          FROM pg_policies WHERE schemaname = 'public'
+ORDER BY 1, 2""", label="views, triggers, routines, indexes, policies", max_rows=1000)
+        grants = s.all("""
+SELECT grantee, table_name, string_agg(privilege_type, ', ' ORDER BY privilege_type) AS privileges
+FROM information_schema.role_table_grants
+WHERE grantee LIKE 'olist_%' AND table_schema = 'public'
+GROUP BY grantee, table_name ORDER BY grantee, table_name""", label="role privileges", max_rows=1000)
+        return ok({"columns": cols, "constraints": fks, "counts": counts, "objects": objects, "grants": grants}, s)
