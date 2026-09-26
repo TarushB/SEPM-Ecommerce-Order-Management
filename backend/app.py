@@ -453,3 +453,242 @@ def lookup_meta(user):
         cats = s.all("SELECT category_name, category_name_en FROM category ORDER BY category_name_en", label="categories")
         pts = s.all("SELECT payment_type, description FROM payment_type ORDER BY 1", label="payment types")
         return ok({"states": states, "categories": cats, "payment_types": pts, "statuses": ORDER_STATUSES}, s)
+
+
+# ---------------------------------------------------------------------------
+# PRODUCTS
+# ---------------------------------------------------------------------------
+@app.get("/api/products")
+@api()
+def products_search(user):
+    f, p = [], {}
+    if arg("category"):
+        f.append(("category", "c.category_name_en = %(cat)s")); p["cat"] = arg("category")
+    if arg("q"):
+        f.append(("q", "p.product_id LIKE %(q)s")); p["q"] = check_id(arg("q")) + "%"
+    if arg("min_weight"):
+        f.append(("min_weight", "p.weight_g >= %(minw)s")); p["minw"] = arg("min_weight", cast=int)
+    if arg("max_weight"):
+        f.append(("max_weight", "p.weight_g <= %(maxw)s")); p["maxw"] = arg("max_weight", cast=int)
+    if arg("low_stock") == "yes":
+        f.append(("low_stock", "p.stock_qty < 30"))
+    where = [c for _, c in f]
+    q = dict(p, limit=50, offset=50 * arg("page", 0, int))
+    sql = f"""
+SELECT p.product_id, p.category_name, COALESCE(c.category_name_en, 'unknown') AS category,
+       p.weight_g, p.length_cm, p.height_cm, p.width_cm, p.photos_qty, p.stock_qty,
+       (SELECT COUNT(*) FROM order_item oi WHERE oi.product_id = p.product_id) AS units_sold
+FROM product p
+LEFT JOIN category c ON c.category_name = p.category_name
+{"WHERE " + chr(10) + "  AND ".join(where) if where else ""}
+ORDER BY units_sold DESC, p.product_id
+LIMIT %(limit)s OFFSET %(offset)s"""
+    with session(user, read_only=True) as s:
+        rows = s.all(sql, q, label="search products")
+        facets = None
+        if arg("facets") == "1":
+            facets = facet_counts(s, "product p\nLEFT JOIN category c ON c.category_name = p.category_name", f, {
+                "category": "c.category_name_en",
+                "low_stock": "CASE WHEN p.stock_qty < 30 THEN 'yes' END",
+            }, p)
+        return ok(rows, s, facets=facets)
+
+
+PRODUCT_FIELDS = ["category_name", "name_length", "description_length", "photos_qty", "weight_g",
+                  "length_cm", "height_cm", "width_cm", "stock_qty"]
+
+
+def _product_values(b):
+    vals = {}
+    for f in PRODUCT_FIELDS:
+        v = b.get(f)
+        vals[f] = None if v in (None, "") else (v if f == "category_name" else int(v))
+    return vals
+
+
+@app.post("/api/products")
+@api(roles=["admin", "manager"])
+def product_create(user):
+    vals = _product_values(body())
+    vals["product_id"] = new_id()
+    if vals["stock_qty"] is None:
+        vals["stock_qty"] = 50
+    cols = ["product_id"] + PRODUCT_FIELDS
+    with session(user) as s:
+        row = s.one(f"INSERT INTO product ({', '.join(cols)})\nVALUES ({', '.join('%(' + c + ')s' for c in cols)})\n"
+                    "RETURNING *", vals, label="insert product")
+        return ok(row, s)
+
+
+@app.put("/api/products/<pid>")
+@api(roles=["admin", "manager"])
+def product_update(user, pid):
+    b = body()
+    vals = _product_values(b)
+    sets = [f for f in PRODUCT_FIELDS if f in b]
+    if not sets:
+        raise ValueError("nothing to update")
+    vals["id"] = check_id(pid)
+    with session(user) as s:
+        row = s.one(f"UPDATE product SET {', '.join(f + ' = %(' + f + ')s' for f in sets)}\n"
+                    "WHERE product_id = %(id)s RETURNING *", vals, label="update product")
+        return ok(row, s)
+
+
+@app.delete("/api/products/<pid>")
+@api(roles=["admin", "manager"])
+def product_delete(user, pid):
+    with session(user) as s:
+        res = s.run("DELETE FROM product WHERE product_id = %(id)s", {"id": check_id(pid)}, label="delete product")
+        return ok({"deleted": res["row_count"]}, s)
+
+
+# ---------------------------------------------------------------------------
+# CUSTOMERS
+# ---------------------------------------------------------------------------
+@app.get("/api/customers")
+@api(roles=["admin", "manager", "analyst", "support"])
+def customers_search(user):
+    f, p = [], {}
+    repeat_expr = "(SELECT COUNT(*) FROM v_customer_public c2 WHERE c2.customer_unique_id = c.customer_unique_id)"
+    if arg("state"):
+        f.append(("state", "c.state_code = %(state)s")); p["state"] = arg("state").upper()
+    if arg("city"):
+        f.append(("city", "c.city LIKE %(city)s")); p["city"] = arg("city").lower() + "%"
+    if arg("q"):
+        f.append(("q", "(c.customer_id LIKE %(q)s OR c.customer_unique_id LIKE %(q)s)")); p["q"] = check_id(arg("q")) + "%"
+    if arg("repeat") == "yes":
+        f.append(("repeat", repeat_expr + " > 1"))
+    where = [c for _, c in f]
+    q = dict(p, limit=50, offset=50 * arg("page", 0, int))
+    sql = f"""
+SELECT c.customer_id, c.customer_unique_id, c.city, c.state_code,
+       (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.customer_id) AS orders
+FROM v_customer_public c
+{"WHERE " + chr(10) + "  AND ".join(where) if where else ""}
+ORDER BY c.state_code, c.city
+LIMIT %(limit)s OFFSET %(offset)s"""
+    with session(user, read_only=True) as s:
+        rows = s.all(sql, q, label="search customers")
+        facets = None
+        if arg("facets") == "1":
+            facets = facet_counts(s, "v_customer_public c", f, {
+                "state": "c.state_code",
+                "repeat": f"CASE WHEN {repeat_expr} > 1 THEN 'yes' END",
+            }, p)
+        return ok(rows, s, facets=facets)
+
+
+@app.get("/api/customers/<cid>")
+@api(roles=["admin", "manager", "analyst", "support"])
+def customer_detail(user, cid):
+    with session(user, read_only=True) as s:
+        acc = s.one("SELECT * FROM v_customer_public WHERE customer_id = %(id)s", {"id": check_id(cid)}, label="customer")
+        if not acc:
+            return fail("Customer not found", 404, s.log)
+        history = s.all("""
+SELECT o.order_id, o.order_status, o.purchase_ts, fn_order_total(o.order_id) AS total,
+       (SELECT MIN(review_score) FROM review r WHERE r.order_id = o.order_id) AS rating
+FROM orders o
+JOIN v_customer_public c ON c.customer_id = o.customer_id
+WHERE c.customer_unique_id = %(u)s
+ORDER BY o.purchase_ts DESC""", {"u": acc["customer_unique_id"]}, label="order history of this person")
+        zip_row = try_run(s, "SELECT zip_prefix FROM customer_account WHERE customer_id = %(id)s", {"id": cid},
+                          label="zip (restricted column)")
+        return ok({"customer": acc, "orders": history,
+                   "zip_prefix": zip_row[0]["zip_prefix"] if zip_row else None}, s)
+
+
+@app.post("/api/customers")
+@api(roles=["admin", "manager"])
+def customer_create(user):
+    b = body()
+    p = {"u": check_id(b.get("customer_unique_id")) if b.get("customer_unique_id") else new_id(),
+         "id": new_id(), "zip": int(b["zip_prefix"])}
+    with session(user) as s:
+        s.run("INSERT INTO customer(customer_unique_id) VALUES (%(u)s) ON CONFLICT DO NOTHING", p, label="insert person")
+        row = s.one("INSERT INTO customer_account(customer_id, customer_unique_id, zip_prefix)\n"
+                    "VALUES (%(id)s, %(u)s, %(zip)s) RETURNING *", p, label="insert account")
+        info = s.one("SELECT city, state_code FROM zip_code WHERE zip_prefix = %(zip)s", p,
+                     label="city/state come from zip_code (3NF)")
+        return ok({**row, **(info or {})}, s)
+
+
+@app.put("/api/customers/<cid>")
+@api(roles=["admin", "manager"])
+def customer_update(user, cid):
+    with session(user) as s:
+        row = s.one("UPDATE customer_account SET zip_prefix = %(zip)s WHERE customer_id = %(id)s RETURNING *",
+                    {"zip": int(body()["zip_prefix"]), "id": check_id(cid)}, label="update address")
+        return ok(row, s)
+
+
+@app.delete("/api/customers/<cid>")
+@api(roles=["admin", "manager"])
+def customer_delete(user, cid):
+    with session(user) as s:
+        row = s.one("DELETE FROM customer_account WHERE customer_id = %(id)s RETURNING customer_unique_id",
+                    {"id": check_id(cid)}, label="delete account")
+        if row:
+            s.run("""DELETE FROM customer c WHERE c.customer_unique_id = %(u)s
+AND NOT EXISTS (SELECT 1 FROM customer_account a WHERE a.customer_unique_id = c.customer_unique_id)""",
+                  {"u": row["customer_unique_id"]}, label="delete person if no accounts left")
+        return ok({"deleted": 1 if row else 0}, s)
+
+
+# ---------------------------------------------------------------------------
+# SELLERS
+# ---------------------------------------------------------------------------
+@app.get("/api/sellers")
+@api(roles=["admin", "manager", "analyst"])
+def sellers_search(user):
+    f, p = [], {}
+    if arg("state"):
+        f.append(("state", "seller_state = %(state)s")); p["state"] = arg("state").upper()
+    if arg("min_orders"):
+        f.append(("min_orders", "orders >= %(mino)s")); p["mino"] = arg("min_orders", cast=int)
+    if arg("max_rating"):
+        f.append(("max_rating", "avg_rating <= %(maxr)s")); p["maxr"] = arg("max_rating", cast=float)
+    if arg("q"):
+        f.append(("q", "seller_id LIKE %(q)s")); p["q"] = check_id(arg("q")) + "%"
+    where = [c for _, c in f]
+    order = {"revenue": "revenue DESC NULLS LAST", "rating": "avg_rating ASC NULLS LAST",
+             "late": "late_pct DESC NULLS LAST"}.get(arg("sort", "revenue"), "revenue DESC NULLS LAST")
+    sql = f"""
+SELECT seller_id, seller_city, seller_state, orders, ROUND(revenue, 2) AS revenue, avg_rating, late_pct
+FROM v_seller_performance
+{"WHERE " + chr(10) + "  AND ".join(where) if where else ""}
+ORDER BY {order}
+LIMIT %(limit)s"""
+    with session(user, read_only=True) as s:
+        rows = s.all(sql, dict(p, limit=50), label="seller scorecard (view)")
+        facets = None
+        if arg("facets") == "1":
+            facets = facet_counts(s, "v_seller_performance", f, {"state": "seller_state"}, p)
+        return ok(rows, s, facets=facets)
+
+
+@app.post("/api/sellers")
+@api(roles=["admin", "manager"])
+def seller_create(user):
+    with session(user) as s:
+        row = s.one("INSERT INTO seller(seller_id, zip_prefix) VALUES (%(id)s, %(zip)s) RETURNING *",
+                    {"id": new_id(), "zip": int(body()["zip_prefix"])}, label="insert seller")
+        return ok(row, s)
+
+
+@app.put("/api/sellers/<sid>")
+@api(roles=["admin", "manager"])
+def seller_update(user, sid):
+    with session(user) as s:
+        row = s.one("UPDATE seller SET zip_prefix = %(zip)s WHERE seller_id = %(id)s RETURNING *",
+                    {"zip": int(body()["zip_prefix"]), "id": check_id(sid)}, label="update seller")
+        return ok(row, s)
+
+
+@app.delete("/api/sellers/<sid>")
+@api(roles=["admin", "manager"])
+def seller_delete(user, sid):
+    with session(user) as s:
+        res = s.run("DELETE FROM seller WHERE seller_id = %(id)s", {"id": check_id(sid)}, label="delete seller")
+        return ok({"deleted": res["row_count"]}, s)
