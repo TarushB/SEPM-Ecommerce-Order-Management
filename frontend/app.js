@@ -589,3 +589,135 @@ function moveCustomer(id) {
     const j = await PUT("/api/customers/" + id, d); if (j.ok) { toast("Updated", "good"); route(); return true; }
   });
 }
+
+/* ---------------- SELLERS */
+PAGES.sellers = async () => {
+  const m = await meta();
+  $("#main").innerHTML = `<div class="page-head"><div><h1>Sellers</h1><div class="muted">Scorecard from the view <span class="mono">v_seller_performance</span>.</div></div>
+    ${can("admin", "manager") ? `<button class="primary" onclick="newSeller()">+ New seller</button>` : ""}</div>
+    <div class="card"><form id="sf" class="filters">${fld("State", sel("state", stateOptions(m)))}${fld("Min orders", `<input name="min_orders" type="number" size="6">`)}
+      ${fld("Max rating", `<input name="max_rating" type="number" step="0.1" size="6">`)}${fld("Sort by", sel("sort", [{ value: "revenue", label: "revenue" }, { value: "rating", label: "worst rating" }, { value: "late", label: "most late" }]))}
+      <button class="primary">Search</button></form></div><div class="card" id="sres"></div>`;
+  $("#sf").addEventListener("submit", e => { e.preventDefault(); searchSellers(); });
+  autoSearch("#sf", searchSellers); searchSellers();
+};
+async function searchSellers() {
+  const j = await GET("/api/sellers?" + qs({ ...formData("#sf"), facets: 1 })); if (!j.ok) return;
+  applyFacets($("#sf"), j.facets);
+  $("#sres").innerHTML = table(j.data, [{ key: "seller_id", label: "seller" }, { key: "seller_city", label: "city" }, { key: "seller_state", label: "state" },
+    { key: "orders", num: true }, { key: "revenue", label: "revenue (R$)", num: true, render: v => fmtNum(v, 2) }, { key: "avg_rating", label: "rating", num: true, render: v => fmtNum(v, 2) },
+    { key: "late_pct", label: "late %", num: true, render: v => fmtNum(v, 1) },
+    ...(can("admin", "manager") ? [{ key: "_", label: "", render: (v, r) => `<button class="small" onclick="editSeller('${r.seller_id}')">Zip</button>
+      <button class="small danger" onclick="confirmDelete('seller','/api/sellers/${r.seller_id}',searchSellers)">Delete</button>` }] : [])]);
+}
+function newSeller() {
+  formModal("New seller", [{ name: "zip_prefix", label: "Zip prefix", type: "number", required: true }], async d => {
+    const j = await POST("/api/sellers", d); if (j.ok) { toast("Seller " + j.data.seller_id.slice(0, 8) + "… created", "good"); return true; }
+  });
+}
+function editSeller(id) {
+  formModal("Change seller zip", [{ name: "zip_prefix", label: "Zip prefix", type: "number", required: true }], async d => {
+    const j = await PUT("/api/sellers/" + id, d); if (j.ok) { toast("Updated", "good"); searchSellers(); return true; }
+  });
+}
+
+/* ---------------- REVIEWS */
+PAGES.reviews = async () => {
+  $("#main").innerHTML = `<div class="page-head"><div><h1>Reviews</h1><div class="muted">Word search uses PostgreSQL full-text search (Portuguese stemming) on a GIN index. Try <i>atraso</i> (delay), <i>quebrado</i> (broken), <i>recomendo</i>.</div></div></div>
+    <div class="card"><form id="rf" class="filters">${fld("Word", `<input name="word" value="atraso">`)}${fld("Score", sel("score", [{ value: "", label: "any" }, ...[1, 2, 3, 4, 5].map(n => ({ value: String(n), label: n + " ★" }))]))}
+      ${fld("With comment", sel("has_comment", [{ value: "", label: "any" }, { value: "yes", label: "yes" }]))}
+      ${fld("Unanswered", sel("unanswered", [{ value: "", label: "any" }, { value: "yes", label: "yes" }]))}
+      ${fld("Order id", `<input name="order_id" size="12">`)}<button class="primary">Search</button></form></div><div class="card" id="rres"></div>`;
+  $("#rf").addEventListener("submit", e => { e.preventDefault(); searchReviews(); });
+  autoSearch("#rf", searchReviews); searchReviews();
+};
+async function searchReviews() {
+  const j = await GET("/api/reviews?" + qs({ ...formData("#rf"), facets: 1 })); if (!j.ok) return;
+  applyFacets($("#rf"), j.facets);
+  $("#rres").innerHTML = table(j.data, [{ key: "order_id", label: "order", render: v => `<a href="#/order/${v}">${esc(v.slice(0, 8))}…</a>` },
+    { key: "review_score", label: "score", render: stars }, { key: "comment_title", label: "title" }, { key: "comment_message", label: "comment" },
+    { key: "creation_date", label: "date" }, { key: "answer_ts", label: "answered" },
+    { key: "_", label: "", render: (v, r) => (can("admin", "manager", "support") ? `<button class="small" onclick="answerReview('${r.review_id}','${r.order_id}')">Mark answered</button> ` : "")
+      + (can("admin", "manager") ? `<button class="small" onclick="rescore('${r.review_id}','${r.order_id}')">Score</button> <button class="small danger" onclick="confirmDelete('review','/api/reviews/${r.review_id}/${r.order_id}',searchReviews)">Delete</button>` : "") }]);
+}
+async function answerReview(rid, oid) { const j = await PUT(`/api/reviews/${rid}/${oid}`, { answer: true }); if (j.ok) { toast("Marked answered", "good"); searchReviews(); } }
+function rescore(rid, oid) {
+  formModal("Change score", [{ name: "review_score", label: "Score", type: "number", value: 3 }], async d => {
+    const j = await PUT(`/api/reviews/${rid}/${oid}`, d); if (j.ok) { toast("Updated", "good"); searchReviews(); return true; }
+  }, "Scores outside 1-5 violate the CHECK constraint.");
+}
+
+/* ---------------- CATEGORIES */
+PAGES.categories = async () => {
+  const j = await GET("/api/categories"); if (!j.ok) return;
+  $("#main").innerHTML = `<div class="page-head"><div><h1>Categories</h1><div class="muted">Two candidate keys: Portuguese name (PK) and English name (UNIQUE).</div></div>
+    ${can("admin", "manager") ? `<button class="primary" onclick="newCategory()">+ New category</button>` : ""}</div>
+    <div class="card">${table(j.data, [{ key: "category_name", label: "category_name (PK)" }, { key: "category_name_en", label: "English (UNIQUE)" }, { key: "products", num: true },
+      ...(can("admin", "manager") ? [{ key: "_", label: "", render: (v, r) => `<button class="small" onclick="renameCategory('${r.category_name}','${r.category_name_en}')">Rename</button>
+        <button class="small danger" onclick="confirmDelete('category ${r.category_name_en}','/api/categories/${r.category_name}',()=>{S.meta=null;route()})">Delete</button>` }] : [])])}</div>`;
+};
+function newCategory() {
+  formModal("New category", [{ name: "category_name", label: "Portuguese name", required: true }, { name: "category_name_en", label: "English name", required: true }], async d => {
+    const j = await POST("/api/categories", d); if (j.ok) { S.meta = null; toast("Created", "good"); route(); return true; }
+  }, "A duplicate English name violates the UNIQUE constraint. Deleting a category that has products is blocked by the foreign key.");
+}
+function renameCategory(pt, en) {
+  formModal("Rename category", [{ name: "category_name_en", label: "English name", value: en, required: true }], async d => {
+    const j = await PUT("/api/categories/" + pt, d); if (j.ok) { S.meta = null; toast("Renamed: one row changed, every product sees it", "good"); route(); return true; }
+  });
+}
+
+/* ---------------- REPORTS */
+PAGES.reports = async () => {
+  const j = await GET("/api/reports"); if (!j.ok) return;
+  S.reports = j.data;
+  $("#main").innerHTML = `<div class="page-head"><div><h1>Reports</h1><div class="muted">Each report demonstrates one SQL concept. Pick one, adjust its parameters, run it, and see the plan with EXPLAIN ANALYZE.</div></div></div>
+    <div class="grid" style="grid-template-columns:300px 1fr">
+      <div class="card" style="padding:8px">${j.data.map((q, i) => `<a style="display:block;padding:7px 8px;border-radius:6px" id="rep-${i}" onclick="pickReport(${i})">
+        <b>${q.id}</b> <span class="small muted">${esc(q.concept)}</span><br><span class="small">${esc(q.title)}</span></a>`).join("")}</div>
+      <div id="report-body"><div class="card muted">Choose a report on the left.</div></div></div>`;
+  pickReport(0);
+};
+function pickReport(i) {
+  const q = S.reports[i]; S.report = q;
+  document.querySelectorAll("[id^=rep-]").forEach((a, k) => a.style.background = k === i ? "var(--accent-soft)" : "");
+  $("#report-body").innerHTML = `<div class="card"><h2>${q.id} · ${esc(q.title)}</h2><div class="badge info">${esc(q.concept)}</div>
+    <pre class="code">${hl(q.sql.trim())}</pre>
+    <form id="repf" class="filters">${Object.entries(q.params).map(([k, v]) => fld(k, `<input name="${k}" value="${esc(v)}" size="10">`)).join("")}
+      <button class="primary">Run</button><button type="button" onclick="explainReport()">EXPLAIN ANALYZE</button>
+      <button type="button" onclick="csvReport()">Download CSV</button></form></div><div class="card" id="rep-res"></div>`;
+  $("#repf").addEventListener("submit", e => { e.preventDefault(); runReport(); }); runReport();
+}
+async function runReport() {
+  const j = await POST("/api/reports/" + S.report.id, formData("#repf")); if (!j.ok) return $("#rep-res").innerHTML = `<div class="callout bad">${esc(j.error)}</div>`;
+  $("#rep-res").innerHTML = `<div class="muted small" style="margin-bottom:6px">${j.data.row_count} rows · ${j.queries.find(q => q.label && q.label.startsWith(S.report.id))?.ms ?? ""} ms</div>` + genericTable(j.data);
+}
+async function explainReport() {
+  const j = await POST(`/api/reports/${S.report.id}/explain`, formData("#repf")); if (!j.ok) return;
+  $("#rep-res").innerHTML = `<h2>Query plan</h2><pre class="code">${esc(j.data.plan)}</pre>`;
+}
+function csvReport() { location.href = `/api/reports/${S.report.id}/csv?` + qs(formData("#repf")); }
+
+/* ---------------- SQL CONSOLE */
+PAGES.console = async () => {
+  $("#main").innerHTML = `<div class="page-head"><div><h1>SQL console</h1><div class="muted">Runs ONE read-only statement as your role (<span class="mono">SET TRANSACTION READ ONLY</span>, 15 s timeout).</div></div></div>
+    <div class="card"><textarea id="sqlbox" rows="8" style="width:100%">SELECT z.state_code, COUNT(*) AS orders,
+       ROUND(AVG(r.review_score), 2) AS avg_rating
+FROM orders o
+JOIN customer_account ca ON ca.customer_id = o.customer_id
+JOIN zip_code z          ON z.zip_prefix   = ca.zip_prefix
+LEFT JOIN review r       ON r.order_id     = o.order_id
+GROUP BY z.state_code
+ORDER BY orders DESC</textarea>
+    <div class="btn-row" style="margin-top:8px"><button class="primary" onclick="runConsole()">Run (Ctrl+Enter)</button>
+      ${["SELECT * FROM v_data_quality LIMIT 50", "SELECT * FROM v_high_risk_orders ORDER BY late_probability DESC LIMIT 20",
+         "SELECT * FROM order_status_log ORDER BY log_id DESC LIMIT 20", "SELECT * FROM pg_policies",
+         "EXPLAIN ANALYZE SELECT * FROM orders WHERE purchase_ts BETWEEN '2018-01-01' AND '2018-01-07'"].map(s =>
+        `<button class="small" onclick="$('#sqlbox').value=${esc(JSON.stringify(s))};runConsole()">${esc(s.slice(0, 34))}…</button>`).join("")}</div></div>
+    <div class="card" id="cons-res"></div>`;
+  $("#sqlbox").addEventListener("keydown", e => { if (e.ctrlKey && e.key === "Enter") runConsole(); });
+};
+async function runConsole() {
+  const j = await POST("/api/sql", { sql: $("#sqlbox").value });
+  $("#cons-res").innerHTML = j.ok ? `<div class="muted small">${j.data.row_count} rows (max 500 shown)</div>` + genericTable(j.data) : `<div class="callout bad">${esc(j.error)}</div>`;
+}
