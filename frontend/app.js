@@ -721,3 +721,140 @@ async function runConsole() {
   const j = await POST("/api/sql", { sql: $("#sqlbox").value });
   $("#cons-res").innerHTML = j.ok ? `<div class="muted small">${j.data.row_count} rows (max 500 shown)</div>` + genericTable(j.data) : `<div class="callout bad">${esc(j.error)}</div>`;
 }
+
+/* ---------------- TRANSACTIONS LAB */
+PAGES.lab = async () => {
+  $("#main").innerHTML = `<div class="page-head"><div><h1>Transactions & concurrency lab</h1>
+    <div class="muted">Live ACID demonstrations. Every demo undoes its own changes.</div></div></div>
+    <div class="grid two">
+      <div class="card"><h2>A · Atomicity</h2><p class="muted">Place an order whose 2nd item is an unknown product. The stored procedure fails, and the 1st item and the order row disappear with it.</p>
+        <button class="primary" onclick="lab('atomicity')">Run</button><div id="lab-atomicity"></div></div>
+      <div class="card"><h2>C · Consistency</h2><p class="muted">Six writes that break a rule: CHECK constraints, a foreign key and two triggers. PostgreSQL rejects each one.</p>
+        <button class="primary" onclick="lab('consistency')">Run</button><div id="lab-consistency"></div></div>
+      <div class="card"><h2>I · Isolation (non-repeatable read)</h2><p class="muted">Session A reads a product's stock twice; between the reads session B adds 5 and commits.</p>
+        <div class="btn-row"><button class="primary" onclick="lab('isolation',{level:'READ COMMITTED'})">READ COMMITTED</button>
+        <button class="primary" onclick="lab('isolation',{level:'REPEATABLE READ'})">REPEATABLE READ</button></div><div id="lab-isolation"></div></div>
+      <div class="card"><h2>Concurrency · Lost update</h2><p class="muted">Two sessions sell the same product at the same time (read stock, write stock − 1).</p>
+        <div class="btn-row"><button class="primary" onclick="lab('lost_update',{locking:false})">Without locking</button>
+        <button class="primary" onclick="lab('lost_update',{locking:true})">With SELECT … FOR UPDATE</button></div><div id="lab-lost_update"></div></div>
+    </div>
+    <div class="card"><h2>D · Durability</h2><p>A committed row survives a crash because PostgreSQL writes it to the write-ahead log (WAL) before <span class="mono">COMMIT</span> returns.
+      Demo: create an order, restart the PostgreSQL service (Windows: <span class="mono">services.msc → postgresql-x64-16 → Restart</span>), then search for the order again.
+      See <span class="mono">db/10_transactions_demo.sql</span> and <span class="mono">db/11_concurrency_demo.sql</span> for the psql versions (including serializable and deadlock demos).</p></div>`;
+};
+async function lab(name, body) {
+  const box = $("#lab-" + name); box.innerHTML = `<div class="muted">running…</div>`;
+  const j = await POST("/api/lab/" + name, body || {});
+  if (!j.ok) return box.innerHTML = `<div class="callout bad">${esc(j.error)}</div>`;
+  const d = j.data;
+  if (name === "atomicity") box.innerHTML = `<div class="callout bad">Error: ${esc(d.error)}</div>
+    ${table([{ when: "before", ...d.before }, { when: "after", ...d.after }])}<div class="callout good">${esc(d.explanation)}</div>`;
+  else if (name === "consistency") box.innerHTML = table(d, [{ key: "rule" }, { key: "result", render: v => `<span class="badge ${v === "rejected" ? "good" : "bad"}">${v}</span>` }, { key: "error" }]);
+  else {
+    box.innerHTML = `<div class="steps" style="margin-top:10px">${d.steps.map(s => `<div class="step"><div class="who ${s.session}">${s.session}</div>
+      <div><pre class="code" style="margin:0">${hl(s.sql)}</pre><div class="small"><b>${esc(s.result)}</b></div></div></div>`).join("")}</div>
+      <div class="callout ${name === "lost_update" && !d.locking ? "bad" : "good"}">${esc(d.explanation)}</div>${d.note ? `<div class="small muted">${esc(d.note)}</div>` : ""}`;
+  }
+}
+
+/* ---------------- ML */
+PAGES.ml = async () => {
+  const j = await GET("/api/ml/summary"); if (!j.ok) return;
+  const d = j.data, m = d.model;
+  if (!m) return $("#main").innerHTML = `<h1>ML: late deliveries</h1><div class="callout">No trained model yet. Run <span class="mono">train_model.bat</span> (or <span class="mono">python ml/train.py</span>), then reload.</div>`;
+  const det = m.details || {};
+  $("#main").innerHTML = `<div class="page-head"><div><h1>ML: late-delivery prediction</h1>
+    <div class="muted">Model <span class="mono">${esc(m.model_version)}</span> · ${esc(m.algorithm)} · trained on ${fmtNum(m.train_rows)} orders, tested on ${fmtNum(m.test_rows)} orders from Jun–Aug 2018 it never saw.</div></div>
+    ${can("admin", "manager") ? `<button class="primary" onclick="newOrder(true)">Try a prediction</button>` : ""}</div>
+    <div class="grid k5">${[["ROC-AUC (test)", fmtNum(m.roc_auc, 3)], ["PR-AUC (test)", fmtNum(m.pr_auc, 3) + ` <span class="small muted">base ${fmtNum((det.late_rate_test || 0), 3)}</span>`],
+      ["Recall at threshold", fmtNum(m.recall_at_t * 100, 0) + "%"], ["Delivery-days error", fmtNum(m.mae_days, 1) + " days"], ["Olist's promise error", fmtNum(m.baseline_mae_days, 1) + " days"]]
+      .map(([l, v]) => `<div class="card kpi"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("")}</div>
+    <div class="grid two">
+      <div class="card"><h2>Actual late rate by predicted-risk decile</h2><div class="muted small">Test months (Jun–Aug 2018), computed in SQL with NTILE(10). D1 = the 10% of orders the model found safest, D10 = riskiest.
+        A useful model makes the bars rise from left to right. Overall late rate: ${fmtNum((det.late_rate_test || 0) * 100, 1)}%.</div>
+        ${vbars(d.deciles.map(x => ({ ...x, decile: "D" + x.risk_decile })), "decile", ["actual_late_pct"], { fmt: v => fmtNum(v, 1) + "%" })}
+        <div class="small muted">The model was trained with balanced class weights, so its raw scores rank risk well but overstate the probability; read them as a risk score.</div></div>
+      <div class="card"><h2>Confusion matrix (SQL on ml_prediction)</h2>${table(d.confusion)}
+        <h3>Model comparison (rolling time-series CV, then test)</h3>${table((det.comparison || []).map(r => ({ model: r.model, cv_roc_auc: r.cv_roc_auc, cv_pr_auc: r.cv_pr_auc, test_roc_auc: r.test_roc_auc, test_pr_auc: r.test_pr_auc })))}</div>
+    </div>
+    <div class="grid two">
+      <div class="card"><h2>What drives the prediction</h2><div class="muted small">Permutation importance on the test months (drop in PR-AUC when a feature is shuffled).</div>
+        ${hbar((det.feature_importance || []).slice(0, 10).map(f => ({ ...f, importance: Math.max(f.importance, 0) })), "feature", "importance", { fmt: v => fmtNum(v, 4) })}</div>
+      <div class="card"><h2>Delivery time: model vs promise</h2>
+        <p>Average error on ${fmtNum(d.days.orders)} test orders: the model is off by <b>${fmtNum(d.days.model_mae_days, 1)} days</b>; Olist's promised date is off by <b>${fmtNum(d.days.promise_mae_days, 1)} days</b>.</p>
+        <p class="muted small">Olist promises very conservative dates, which is why only ~8% of orders are late. The regression model gives a far more accurate delivery estimate to show the customer.</p>
+        <h3>Pipeline</h3><ol class="small"><li>Features are built in SQL (<span class="mono">v_order_features</span>, <span class="mono">mv_order_features</span>): distance from zip coordinates, freight, weight, seller's past late rate (only deliveries completed before the purchase: no leakage).</li>
+        <li>Rolling time-series cross-validation picks the model; the threshold is tuned on out-of-fold predictions.</li>
+        <li>Metrics go into <span class="mono">ml_model</span>, scores into <span class="mono">ml_prediction</span>; new orders are scored live when they are placed.</li></ol></div>
+    </div>
+    <div class="card"><h2>Open orders with the highest risk <span class="muted small">(view v_high_risk_orders)</span></h2>${table(d.risky, [{ key: "order_id", render: v => shortId(v) },
+      { key: "order_status", label: "status", render: statusBadge }, { key: "purchase_ts", label: "purchased" }, { key: "seller_state", label: "from" }, { key: "customer_state", label: "to" },
+      { key: "distance_km", label: "km", num: true }, { key: "main_category", label: "category" }, { key: "late_probability", label: "late risk", num: true, render: v => fmtNum(v * 100, 1) + "%" },
+      { key: "predicted_days", label: "pred. days", num: true, render: v => fmtNum(v, 1) }], { onRow: r => `location.hash='#/order/${r.order_id}'` })}</div>`;
+};
+
+/* ---------------- SCHEMA */
+PAGES.schema = async () => {
+  $("#main").innerHTML = `<div class="page-head"><div><h1>ER model & database schema</h1><div class="muted">The diagram is the design; the tabs below are read live from PostgreSQL's catalog.</div></div></div>
+    <div class="tabs">${["ER diagram", "Tables & keys", "Constraints", "Objects", "Privileges", "Normalization"].map((t, i) => `<button onclick="schemaTab(${i})" data-t="${i}">${t}</button>`).join("")}</div>
+    <div id="schema-body"></div>`;
+  const j = await GET("/api/schema"); S.schema = j.ok ? j.data : null; schemaTab(0);
+};
+async function schemaTab(i) {
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", +b.dataset.t === i));
+  const d = S.schema, box = $("#schema-body");
+  if (i === 0) {
+    box.innerHTML = `<div class="card"><div class="btn-row" style="margin-bottom:8px"><button class="small" onclick="$('#er-diagram').classList.toggle('zoom')">Toggle zoom</button></div><div id="er-diagram">rendering…</div><div class="small muted" style="margin-top:8px">|| one · o{ zero or many · |{ one or many · PK primary key · FK foreign key · UK unique (candidate key)</div></div>`;
+    try {
+      mermaid.initialize({ startOnLoad: false, theme: "default", er: { useMaxWidth: true, fontSize: 13 }, securityLevel: "strict" });
+      const { svg } = await mermaid.render("erd" + Date.now(), window.ER_DIAGRAM);
+      $("#er-diagram").innerHTML = svg;
+    } catch (e) { $("#er-diagram").innerHTML = `<pre class="code">${esc(window.ER_DIAGRAM)}</pre>`; }
+    return;
+  }
+  if (!d) return box.innerHTML = `<div class="callout bad">Could not read the catalog.</div>`;
+  if (i === 1) {
+    const counts = Object.fromEntries(d.counts.map(c => [c.table_name, c.approx_rows]));
+    const tables = [...new Set(d.columns.map(c => c.table_name))];
+    box.innerHTML = `<div class="grid three">${tables.map(t => `<div class="card"><h2>${t} <span class="muted small">~${fmtNum(Math.max(counts[t] || 0, 0))} rows</span></h2>
+      ${table(d.columns.filter(c => c.table_name === t), [{ key: "column_name", label: "column", render: (v, r) => (r.is_pk ? "🔑 " : "") + esc(v) },
+        { key: "data_type", label: "type", render: (v, r) => esc(v) + (r.max_len ? `(${r.max_len})` : "") }, { key: "is_nullable", label: "null" }])}</div>`).join("")}</div>`;
+  } else if (i === 2) box.innerHTML = `<div class="card">${table(d.constraints)}</div>`;
+  else if (i === 3) box.innerHTML = `<div class="card">${table(d.objects)}</div>`;
+  else if (i === 4) box.innerHTML = `<div class="card"><div class="muted small">GRANTs held by each group role (the app switches to one of them per request with SET LOCAL ROLE).</div>${table(d.grants)}</div>`;
+  else if (i === 5) box.innerHTML = `<div class="card"><h2>Functional dependencies</h2><div class="muted small">In every table the determinant is a candidate key, so each table is in BCNF.</div>
+    ${table(window.NORMALIZATION.map(([l, r, t]) => ({ determinant: l, "→ determines": r, "table (BCNF)": t })))}
+    <h3>Decomposition steps</h3><ol><li><b>1NF:</b> items and payments were repeating groups of an order → separate rows (order_item, payment).</li>
+    <li><b>2NF:</b> status and dates depend on order_id only, not on (order_id, order_item_id) → ORDERS split from ORDER_ITEM; product attributes → PRODUCT.</li>
+    <li><b>3NF:</b> removed transitive dependencies: customer_id → zip → city/state (ZIP_CODE, STATE), product → category → English name (CATEGORY), payment_type → description (PAYMENT_TYPE).</li>
+    <li><b>BCNF:</b> CATEGORY has two determinants, both candidate keys; no other non-key determinants remain.</li></ol>
+    <p class="muted">Run <span class="mono">db/14_normalization_demo.sql</span> to see update / insert / delete anomalies on the real data.</p></div>`;
+}
+
+/* ---------------- USERS */
+PAGES.users = async () => {
+  const j = await GET("/api/admin/users"); if (!j.ok) return;
+  $("#main").innerHTML = `<div class="page-head"><div><h1>Users & roles</h1><div class="muted">Passwords are hashed with bcrypt inside PostgreSQL (pgcrypto). The app never sees a stored hash; login calls <span class="mono">fn_login()</span>.</div></div>
+    <button class="primary" onclick="newUser()">+ New user</button></div>
+    <div class="card">${table(j.data)}</div>
+    <div class="card"><h2>Role → what the database allows</h2>${table([
+      { role: "admin", "PostgreSQL role": "olist_admin", allowed: "everything, incl. DDL and users" },
+      { role: "manager", "PostgreSQL role": "olist_manager", allowed: "CRUD on business tables, procedures, all views" },
+      { role: "analyst", "PostgreSQL role": "olist_analyst", allowed: "read-only; zip_code lat/lng hidden by column privileges" },
+      { role: "seller", "PostgreSQL role": "olist_seller", allowed: "only orders containing own items (row-level security); update status" },
+      { role: "support", "PostgreSQL role": "olist_support", allowed: "read orders/customers (privacy view), mark reviews answered" }])}</div>`;
+};
+function newUser() {
+  formModal("New application user", [{ name: "username", label: "Username", required: true }, { name: "password", label: "Password", type: "password", required: true },
+    { name: "app_role", label: "Role", options: ["manager", "analyst", "support", "seller", "admin"] }, { name: "seller_id", label: "Seller id (only for role seller)", full: true }],
+    async d => { const j = await POST("/api/admin/users", d); if (j.ok) { toast("User created", "good"); route(); return true; } },
+    "A seller user without a seller_id violates a CHECK constraint.");
+}
+
+/* ------------------------------------------------------------------ boot */
+(async function boot() {
+  try {
+    const r = await fetch("/api/me"); const j = await r.json();
+    if (j.data) { S.user = j.data; renderShell(); route(); } else renderLogin();
+  } catch (e) { renderLogin("Server not reachable - is backend/app.py running?"); }
+})();
