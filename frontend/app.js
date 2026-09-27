@@ -277,3 +277,115 @@ function route() {
   fn(arg ? decodeURIComponent(arg) : undefined);
 }
 window.addEventListener("hashchange", route);
+
+/* ================================================================== PAGES */
+PAGES.dashboard = async () => {
+  const j = await GET("/api/dashboard"); if (!j.ok) return $("#main").innerHTML = `<div class="callout bad">${esc(j.error)}</div>`;
+  const d = j.data, k = d.kpi;
+  $("#main").innerHTML = `<div class="page-head"><div><h1>Dashboard</h1>
+    <div class="muted">${S.user.app_role === "seller" ? "Row-level security: you only see orders that contain your items." : "All figures are computed live with SQL on the full dataset."}</div></div></div>
+    <div class="grid k5">
+      ${[["Orders", fmtNum(k.orders)], ["Item revenue", "R$ " + fmtNum(k.revenue / 1e6, 2) + "M"], ["Average rating", fmtNum(k.avg_rating, 2) + " ★"],
+        ["Delivered late", fmtNum(k.late_pct, 1) + "%"], ["Open orders", fmtNum(k.open_orders)]].map(([l, v]) =>
+        `<div class="card kpi"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("")}
+    </div>
+    <div class="card"><h2>Monthly item revenue (R$), Jan 2017 – Aug 2018</h2>${lineChart(d.monthly, "month", "revenue", { fmt: v => fmtNum(v / 1000) + "k" })}</div>
+    <div class="grid two">
+      <div class="card"><h2>Top 10 categories by revenue</h2>${hbar(d.categories, "category", "revenue", { fmt: v => fmtNum(v / 1000) + "k" })}</div>
+      <div class="card"><h2>Orders by customer state (top 12)</h2>${hbar(d.states, "state", "orders")}</div>
+    </div>
+    <div class="grid two">
+      <div class="card"><h2>Review score distribution</h2>${vbars(d.ratings.map(r => ({ ...r, score: r.review_score + "★" })), "score", ["reviews"])}</div>
+      <div class="card"><h2>Order status</h2>${table(d.status, [{ key: "order_status", label: "status", render: statusBadge }, { key: "orders", num: true }])}</div>
+    </div>`;
+};
+
+/* ---------------- ORDERS */
+PAGES.orders = async () => {
+  const m = await meta();
+  $("#main").innerHTML = `<div class="page-head"><div><h1>Orders</h1><div class="muted">Search with any combination of filters; the WHERE clause is built from what you fill in.</div></div>
+    ${can("admin", "manager") ? `<button class="primary" onclick="newOrder()">+ New order</button>` : ""}</div>
+    <div class="card"><form id="of" class="filters">
+      ${fld("Status", sel("status", [{ value: "", label: "any" }, ...m.statuses]))}
+      ${fld("Customer state", sel("state", stateOptions(m)))}
+      ${fld("From", `<input type="date" name="date_from">`)}${fld("To", `<input type="date" name="date_to">`)}
+      ${fld("Rating ≤", sel("max_rating", [{ value: "", label: "any" }, ...[1, 2, 3, 4, 5].map(n => ({ value: String(n), label: "≤ " + n + " ★" }))]))}
+      ${fld("Delivered late", sel("late", [{ value: "", label: "any" }, { value: "yes", label: "late" }, { value: "no", label: "on time" }]))}
+      ${fld("Order id starts with", `<input name="order_id" size="12">`)}
+      <button class="primary">Search</button></form></div>
+    <div class="card" id="orders-res"></div>`;
+  S.cache.orderPage = 0;
+  $("#of").addEventListener("submit", e => { e.preventDefault(); S.cache.orderPage = 0; searchOrders(); });
+  autoSearch("#of", () => { S.cache.orderPage = 0; searchOrders(); });
+  searchOrders();
+};
+async function searchOrders() {
+  const f = formData("#of");
+  const j = await GET("/api/orders?" + qs({ ...f, page: S.cache.orderPage, facets: 1 }));
+  if (!j.ok) return;
+  applyFacets($("#of"), j.facets);
+  $("#orders-res").innerHTML = `<div class="muted small" style="margin-bottom:8px">Page ${S.cache.orderPage + 1} · ${j.data.length} rows
+    ${S.cache.orderPage > 0 ? `<a onclick="S.cache.orderPage--;searchOrders()">◂ prev</a>` : ""} ${j.data.length === 50 ? `<a onclick="S.cache.orderPage++;searchOrders()">next ▸</a>` : ""}</div>` +
+    table(j.data, [
+      { key: "order_id", label: "order", render: v => shortId(v) }, { key: "order_status", label: "status", render: statusBadge },
+      { key: "purchase_ts", label: "purchased" }, { key: "customer_city", label: "city" }, { key: "customer_state", label: "state" },
+      { key: "items", num: true }, { key: "total", label: "total (R$)", num: true, render: v => fmtNum(v, 2) },
+      { key: "rating", render: stars },
+      { key: "delivered_customer_date", label: "delivery", render: (v, r) => v ? (v > r.estimated_delivery_date ? `<span class="badge bad">late</span>` : `<span class="badge good">on time</span>`) : "" },
+    ], { onRow: r => `location.hash='#/order/${r.order_id}'` });
+}
+PAGES.order = async id => {
+  const j = await GET("/api/orders/" + id);
+  if (!j.ok) return $("#main").innerHTML = `<div class="callout bad">${esc(j.error)}</div><a href="#/orders">◂ back to orders</a>`;
+  const d = j.data, o = d.order, p = d.prediction;
+  const next = { created: "approved", approved: "invoiced", invoiced: "processing", processing: "shipped", shipped: "delivered" }[o.order_status];
+  $("#main").innerHTML = `<a href="#/orders">◂ Orders</a>
+    <div class="page-head"><div><h1>Order <span class="mono" style="font-size:15px">${esc(o.order_id)}</span></h1>
+      <div>${statusBadge(o.order_status)} <span class="muted">purchased ${esc(o.purchase_ts)} · ${esc(o.customer_city)} / ${esc(o.customer_state)}</span></div></div>
+      <div class="btn-row">
+        ${next && can("admin", "manager", "seller") ? `<button class="primary" onclick="setStatus('${o.order_id}','${next}')">Mark ${next}</button>` : ""}
+        ${can("admin", "manager") ? `<button onclick="setStatusPick('${o.order_id}')">Set status…</button>
+          <button onclick="cancelOrder('${o.order_id}')">Cancel order</button>
+          <button class="danger" onclick="confirmDelete('order ${o.order_id.slice(0, 8)}','/api/orders/${o.order_id}',()=>location.hash='#/orders')">Delete</button>` : ""}
+      </div></div>
+    <div class="grid two">
+      <div class="card"><h2>Details</h2><div class="kv">
+        <div>Customer (person)</div><div class="mono">${esc(o.customer_unique_id)}</div>
+        <div>Approved</div><div>${esc(o.approved_at || "–")}</div>
+        <div>Handed to carrier</div><div>${esc(o.delivered_carrier_date || "–")}</div>
+        <div>Delivered</div><div>${esc(o.delivered_customer_date || "–")}</div>
+        <div>Promised by</div><div>${esc(o.estimated_delivery_date)}</div>
+        <div>Delivery time</div><div>${o.delivery_days !== null ? fmtNum(o.delivery_days, 1) + " days" : "–"}</div>
+        <div>Order total</div><div>${money(o.order_total)} <span class="muted small">fn_order_total()</span></div></div></div>
+      <div class="card"><h2>ML late-delivery risk</h2>${!d.prediction_access ? `<div class="muted">Your role cannot read ml_prediction (permission denied - see SQL panel).</div>`
+        : p ? riskBlock(p.late_probability, p.predicted_days, p.model_version, null, p.threshold) : `<div class="muted">No prediction stored for this order.</div>`}
+        ${o.delivered_customer_date ? `<div class="small muted" style="margin-top:8px">Actual outcome: ${o.delivered_customer_date > o.estimated_delivery_date ? `<span class="badge bad">late</span>` : `<span class="badge good">on time</span>`}</div>` : ""}</div>
+    </div>
+    <div class="card"><h2>Items</h2>${table(d.items, [{ key: "order_item_id", label: "#" }, { key: "product_id", label: "product" }, { key: "category" },
+      { key: "seller_id", label: "seller" }, { key: "seller_city", label: "seller city" }, { key: "seller_state", label: "st" },
+      { key: "price", num: true, render: v => fmtNum(v, 2) }, { key: "freight_value", label: "freight", num: true, render: v => fmtNum(v, 2) }])}</div>
+    <div class="grid two">
+      <div class="card"><h2>Payments</h2>${d.payments === null ? `<div class="muted">Permission denied for your role.</div>` : table(d.payments)}</div>
+      <div class="card"><h2>Reviews</h2>${d.reviews === null ? `<div class="muted">Permission denied for your role.</div>` : table(d.reviews, [
+        { key: "review_score", label: "score", render: stars }, { key: "comment_title", label: "title" }, { key: "comment_message", label: "comment" }, { key: "creation_date", label: "date" }])}
+        ${can("admin", "manager") ? `<button class="small" style="margin-top:8px" onclick="newReview('${o.order_id}')">+ Add review</button>` : ""}</div>
+    </div>
+    <div class="card"><h2>Status history <span class="muted small">(written by trigger trg_order_status_log)</span></h2>${d.history === null ? `<div class="muted">Permission denied.</div>` : table(d.history, null, { empty: "No changes since the data was loaded." })}</div>`;
+};
+function riskBlock(prob, days, version, promised, threshold) {
+  const t = (threshold || 0.57) * 100, pct = prob * 100, col = pct >= t ? "var(--bad)" : pct >= t * 0.75 ? "var(--warn)" : "var(--good)";
+  return `<div class="risk"><b style="font-size:22px;color:${col}">${fmtNum(pct, 1)}%</b><div class="meter"><i style="width:${pct}%;background:${col}"></i></div></div>
+    <div class="small muted">risk score of arriving after the promised date · <b>${pct >= t ? "HIGH risk" : pct >= t * 0.75 ? "medium risk" : "low risk"}</b> (alert threshold ${fmtNum(t, 0)})</div>
+    <div style="margin-top:8px">Predicted delivery time: <b>${fmtNum(days, 1)} days</b>${promised ? ` (promised: ${fmtNum(promised, 0)} days)` : ""}</div>
+    <div class="small muted">model ${esc(version)}</div>`;
+}
+async function setStatus(id, status) {
+  const j = await POST(`/api/orders/${id}/status`, { status }); if (j.ok) { toast("Status changed to " + status, "good"); route(); }
+}
+async function setStatusPick(id) {
+  const m = await meta();
+  formModal("Change order status", [{ name: "status", label: "New status", options: m.statuses }], async d => {
+    const j = await POST(`/api/orders/${id}/status`, d); if (j.ok) { toast("Status changed", "good"); route(); } return true;
+  }, "The trigger trg_validate_status_transition rejects backward moves; try one to see the error.");
+}
+async function cancelOrder(id) { const j = await POST(`/api/orders/${id}/cancel`); if (j.ok) { toast("Order canceled, stock returned", "good"); route(); } }
