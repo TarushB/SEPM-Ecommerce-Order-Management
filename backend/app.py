@@ -933,3 +933,246 @@ FROM information_schema.role_table_grants
 WHERE grantee LIKE 'olist_%' AND table_schema = 'public'
 GROUP BY grantee, table_name ORDER BY grantee, table_name""", label="role privileges", max_rows=1000)
         return ok({"columns": cols, "constraints": fks, "counts": counts, "objects": objects, "grants": grants}, s)
+
+
+# ---------------------------------------------------------------------------
+# ML
+# ---------------------------------------------------------------------------
+@app.get("/api/ml/summary")
+@api(roles=["admin", "manager", "analyst"])
+def ml_summary(user):
+    with session(user, read_only=True) as s:
+        model = s.one("SELECT * FROM ml_model WHERE is_active ORDER BY trained_at DESC LIMIT 1", label="active model")
+        if not model:
+            return ok({"model": None}, s)
+        confusion = s.all("""
+SELECT CASE WHEN f.is_late = 1 THEN 'actually late' ELSE 'actually on time' END AS actual,
+       COUNT(*) FILTER (WHERE mp.late_probability >= m.threshold) AS predicted_late,
+       COUNT(*) FILTER (WHERE mp.late_probability <  m.threshold) AS predicted_on_time
+FROM ml_prediction mp
+JOIN mv_order_features f ON f.order_id = mp.order_id
+JOIN ml_model m          ON m.model_version = mp.model_version
+WHERE f.is_late IS NOT NULL AND f.purchase_ts >= '2018-06-01' AND f.purchase_ts < '2018-09-01'
+GROUP BY 1 ORDER BY 1 DESC""", label="confusion matrix on the test months, computed in SQL")
+        deciles = s.all("""
+SELECT bucket AS risk_decile, COUNT(*) AS orders,
+       ROUND(100.0 * AVG(is_late), 1) AS actual_late_pct,
+       ROUND(100.0 * AVG(late_probability), 1) AS avg_predicted_pct
+FROM (SELECT f.is_late, mp.late_probability,
+             NTILE(10) OVER (ORDER BY mp.late_probability) AS bucket
+      FROM ml_prediction mp JOIN mv_order_features f ON f.order_id = mp.order_id
+      WHERE f.is_late IS NOT NULL AND f.purchase_ts >= '2018-06-01' AND f.purchase_ts < '2018-09-01') t
+GROUP BY bucket ORDER BY bucket""", label="actual late rate by predicted-risk decile (window function NTILE)")
+        days = s.one("""
+SELECT ROUND(AVG(ABS(mp.predicted_days - f.delivery_days)), 2) AS model_mae_days,
+       ROUND(AVG(ABS(f.promised_days - f.delivery_days)), 2)  AS promise_mae_days,
+       COUNT(*) AS orders
+FROM ml_prediction mp JOIN mv_order_features f ON f.order_id = mp.order_id
+WHERE f.delivery_days IS NOT NULL AND f.purchase_ts >= '2018-06-01' AND f.purchase_ts < '2018-09-01'""",
+                     label="delivery-days error: model vs Olist's promise")
+        risky = s.all("""
+SELECT order_id, order_status, purchase_ts, customer_state, seller_state, distance_km, main_category,
+       late_probability, predicted_days
+FROM v_high_risk_orders ORDER BY late_probability DESC LIMIT 15""", label="open orders with highest risk")
+        return ok({"model": model, "confusion": confusion, "deciles": deciles, "days": days, "risky": risky}, s)
+
+
+@app.post("/api/ml/predict")
+@api(roles=["admin", "manager"])
+def ml_predict(user):
+    """What-if: place the order inside a transaction, read its live features,
+    score it, then ROLLBACK - nothing is saved."""
+    b = body()
+    items = [{"product_id": check_id(b.get("product_id"), "product id"), "seller_id": check_id(b.get("seller_id"), "seller id")}]
+    with session(user, commit=False) as s:
+        row = s.one("CALL sp_place_order(%(c)s, %(items)s::jsonb, %(pt)s, %(n)s, NULL)",
+                    {"c": check_id(b.get("customer_id"), "customer id"), "items": json.dumps(items),
+                     "pt": b.get("payment_type", "credit_card"), "n": int(b.get("installments", 1))},
+                    label="temporary order (will be rolled back)")
+        feats = s.all("SELECT * FROM v_order_features WHERE order_id = %(id)s", {"id": row["p_order_id"]},
+                      label="ML features (live view)")
+        pred = ml_service.score(feats)[0]
+        return ok({"prediction": pred, "features": feats[0]}, s)
+
+
+# ---------------------------------------------------------------------------
+# TRANSACTIONS & CONCURRENCY LAB
+# ---------------------------------------------------------------------------
+DEMO = {"customer": "9ef432eb6251297304e76186b10a928d", "product": "4244733e06e7ecb4970a6e2683c13e61",
+        "seller": "48436dade18ac8b2bce089ec2a041202", "delivered_order": "e481f51cbdc54678b7cc49136f2d6af7"}
+
+
+@app.post("/api/lab/<demo>")
+@api(roles=["admin", "manager"])
+def lab(user, demo):
+    if demo == "atomicity":
+        with session(user, commit=False) as s:
+            before = s.one("SELECT COUNT(*) AS orders, (SELECT COUNT(*) FROM order_item) AS items FROM orders",
+                           label="count before")
+            s.savepoint("demo")
+            error = None
+            try:
+                s.run("CALL sp_place_order(%(c)s, %(items)s::jsonb)", {"c": DEMO["customer"], "items": json.dumps([
+                    {"product_id": DEMO["product"], "seller_id": DEMO["seller"], "price": 50, "freight": 10},
+                    {"product_id": "no_such_product_000000000000000", "seller_id": DEMO["seller"], "price": 20, "freight": 5}])},
+                    label="order: item 1 valid, item 2 unknown product")
+            except DBError as e:
+                error = e.message
+                s.rollback_to("demo")
+            after = s.one("SELECT COUNT(*) AS orders, (SELECT COUNT(*) FROM order_item) AS items FROM orders",
+                          label="count after")
+            return ok({"before": before, "after": after, "error": error,
+                       "explanation": "The procedure failed on item 2, so item 1 and the order row were undone too."}, s)
+
+    if demo == "consistency":
+        tests = [
+            ("CHECK review_score BETWEEN 1 AND 5",
+             "INSERT INTO review(review_id, order_id, review_score, creation_date) VALUES ('demo_review_000000000000000000', %(o)s, 7, now())"),
+            ("CHECK price > 0",
+             "UPDATE order_item SET price = -5 WHERE order_id = %(o)s AND order_item_id = 1"),
+            ("FOREIGN KEY orders.customer_id",
+             "INSERT INTO orders(order_id, customer_id, order_status, purchase_ts, estimated_delivery_date) "
+             "VALUES ('demo_order_0000000000000000000', 'no_such_customer_000000000000000', 'created', now(), now())"),
+            ("TRIGGER: status can only move forward",
+             "UPDATE orders SET order_status = 'processing' WHERE order_id = %(o)s"),
+            ("TRIGGER: delivered orders cannot be deleted",
+             "DELETE FROM orders WHERE order_id = %(o)s"),
+            ("CHECK stock_qty >= 0",
+             "UPDATE product SET stock_qty = -1 WHERE product_id = %(p)s"),
+        ]
+        results = []
+        with session(user, commit=False) as s:
+            for rule, sql in tests:
+                s.savepoint("t")
+                try:
+                    s.run(sql, {"o": DEMO["delivered_order"], "p": DEMO["product"]}, label=rule)
+                    results.append({"rule": rule, "result": "accepted (unexpected)"})
+                except DBError as e:
+                    s.rollback_to("t")
+                    results.append({"rule": rule, "result": "rejected", "error": e.message})
+            return ok(results, s)
+
+    if demo == "isolation":
+        level = body().get("level", "READ COMMITTED").upper()
+        if level not in ("READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE"):
+            raise ValueError("level")
+        steps, log = [], []
+        a, b = connect(), connect()
+        q = "SELECT stock_qty FROM product WHERE product_id = %s"
+        try:
+            ca, cb = a.cursor(), b.cursor()
+            for c in (ca, cb):
+                c.execute("SET ROLE olist_manager")
+            a.commit(); b.commit()
+            ca.execute(f"SET TRANSACTION ISOLATION LEVEL {level}")
+            ca.execute(q, (DEMO["product"],)); first = ca.fetchone()[0]
+            steps.append({"session": "A", "sql": f"BEGIN ISOLATION LEVEL {level};\n" + ca.mogrify(q, (DEMO["product"],)),
+                          "result": f"stock_qty = {first}"})
+            cb.execute("UPDATE product SET stock_qty = stock_qty + 5 WHERE product_id = %s", (DEMO["product"],)); b.commit()
+            steps.append({"session": "B", "sql": cb.mogrify("UPDATE product SET stock_qty = stock_qty + 5 WHERE product_id = %s",
+                                                           (DEMO["product"],)) + ";\nCOMMIT;", "result": "committed +5"})
+            ca.execute(q, (DEMO["product"],)); second = ca.fetchone()[0]
+            steps.append({"session": "A", "sql": ca.mogrify(q, (DEMO["product"],)), "result": f"stock_qty = {second}"})
+            a.rollback()
+            steps.append({"session": "A", "sql": "ROLLBACK;", "result": ""})
+            cb.execute("UPDATE product SET stock_qty = stock_qty - 5 WHERE product_id = %s", (DEMO["product"],)); b.commit()
+            steps.append({"session": "B", "sql": "-- undo the demo change\nUPDATE product SET stock_qty = stock_qty - 5 ...; COMMIT;",
+                          "result": "restored"})
+        finally:
+            a.close(); b.close()
+        same = first == second
+        return jsonify({"ok": True, "data": {"level": level, "steps": steps, "first": first, "second": second,
+                        "explanation": ("Session A saw the SAME value both times: its snapshot was taken at the first "
+                                        "read (no non-repeatable read)." if same else
+                                        "Session A saw B's committed change inside its own transaction: "
+                                        "a non-repeatable read, allowed under READ COMMITTED.")},
+                        "queries": log})
+
+    if demo == "lost_update":
+        locking = bool(body().get("locking"))
+        pid = DEMO["product"]
+        read_sql = "SELECT stock_qty FROM product WHERE product_id = %s" + (" FOR UPDATE" if locking else "")
+        steps = []
+        start_conn = connect(); c0 = start_conn.cursor()
+        c0.execute("SET ROLE olist_manager")
+        c0.execute("SELECT stock_qty FROM product WHERE product_id = %s", (pid,)); start = c0.fetchone()[0]
+        start_conn.rollback()
+        barrier = threading.Barrier(2, timeout=10)
+
+        def worker(name, delay):
+            conn = connect(); cur = conn.cursor()
+            try:
+                cur.execute("SET ROLE olist_manager")
+                cur.execute("SET lock_timeout = '8s'")
+                if not locking:
+                    barrier.wait()          # both read before either writes
+                else:
+                    time.sleep(delay)
+                t = time.perf_counter()
+                cur.execute(read_sql, (pid,)); seen = cur.fetchone()[0]
+                waited = round((time.perf_counter() - t) * 1000)
+                steps.append({"session": name, "sql": cur.mogrify(read_sql, (pid,)),
+                              "result": f"read {seen}" + (f" (waited {waited} ms for the lock)" if waited > 50 else "")})
+                if not locking:
+                    barrier.wait()
+                time.sleep(0.5 if name == "A" else 0.8)
+                cur.execute("UPDATE product SET stock_qty = %s WHERE product_id = %s", (seen - 1, pid))
+                conn.commit()
+                steps.append({"session": name, "sql": cur.mogrify("UPDATE product SET stock_qty = %s WHERE product_id = %s",
+                                                                (seen - 1, pid)) + ";\nCOMMIT;",
+                              "result": f"wrote {seen - 1}"})
+            finally:
+                conn.close()
+
+        threads = [threading.Thread(target=worker, args=("A", 0)), threading.Thread(target=worker, args=("B", 0.2))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        c1 = connect(); cur = c1.cursor()
+        cur.execute("SET ROLE olist_manager")
+        cur.execute("SELECT stock_qty FROM product WHERE product_id = %s", (pid,)); end = cur.fetchone()[0]
+        cur.execute("UPDATE product SET stock_qty = %s WHERE product_id = %s", (start, pid)); c1.commit(); c1.close()
+        lost = (start - end) < 2
+        return jsonify({"ok": True, "data": {
+            "locking": locking, "start": start, "end": end, "steps": steps,
+            "explanation": (f"Two sales but stock only fell from {start} to {end}: one update was LOST."
+                            if lost else f"Stock fell from {start} to {end}: FOR UPDATE made B wait for A, "
+                                         "so both sales were counted."),
+            "note": "Stock was restored to its starting value afterwards."}, "queries": []})
+
+    return fail("unknown demo", 404)
+
+
+# ---------------------------------------------------------------------------
+# ADMIN: application users
+# ---------------------------------------------------------------------------
+@app.get("/api/admin/users")
+@api(roles=["admin"])
+def users_list(user):
+    with session(user, read_only=True) as s:
+        rows = s.all("SELECT user_id, username, app_role, seller_id, is_active, "
+                     "left(password_hash, 7) || '...' AS bcrypt_hash FROM app_user ORDER BY user_id", label="users")
+        return ok(rows, s)
+
+
+@app.post("/api/admin/users")
+@api(roles=["admin"])
+def users_create(user):
+    b = body()
+    if b.get("app_role") not in ("admin", "manager", "analyst", "seller", "support"):
+        raise ValueError("role")
+    with session(user) as s:
+        s.run("CALL sp_create_user(%(u)s, %(p)s, %(r)s, %(sid)s)",
+              {"u": b["username"], "p": b["password"], "r": b["app_role"], "sid": b.get("seller_id") or None},
+              label="create user (bcrypt hash computed in PostgreSQL)")
+        for entry in s.log:
+            if entry.get("sql") and "sp_create_user" in entry["sql"]:
+                entry["sql"] = entry["sql"].replace(f"'{b['password']}'", "'********'")
+        return ok({"username": b["username"]}, s)
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "5000"))
+    print(f"\n  Olist DBMS app running:  http://localhost:{port}\n")
+    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
