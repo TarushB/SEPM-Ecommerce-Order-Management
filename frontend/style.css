@@ -76,3 +76,86 @@ tr.clickable:hover td { background: #f5f8ff; }
 .badge.bad { background: var(--bad-soft); color: var(--bad); }
 .badge.warn { background: var(--warn-soft); color: var(--warn); }
 .badge.info { background: var(--accent-soft); color: var(--accent); }
+
+/* SQL panel */
+aside.sql { background: #0b1220; color: var(--code-ink); display: flex; flex-direction: column; min-width: 0; border-left: 1px solid #1e293b; }
+aside.sql header { padding: 12px 14px; border-bottom: 1px solid #1e293b; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+aside.sql header b { font-size: 13px; }
+aside.sql header button { background: #1e293b; color: #cbd5e1; border-color: #334155; }
+.flow { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 10px 14px; border-bottom: 1px solid #1e293b; color: #94a3b8; flex-wrap: wrap; }
+.flow span { padding: 2px 7px; border-radius: 5px; background: #1e293b; }
+.flow span.on { background: #1d4ed8; color: #fff; }
+.sql-list { overflow-y: auto; padding: 10px 12px 40px; flex: 1; }
+.sql-item { border: 1px solid #1e293b; border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+.sql-item .meta { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; padding: 6px 10px; background: #111a2e; color: #94a3b8; }
+.sql-item .meta .lbl { color: #e2e8f0; font-weight: 600; }
+.sql-item pre { margin: 0; padding: 9px 10px; font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; background: var(--code-bg); }
+.sql-item .err { padding: 6px 10px; background: #3b1414; color: #fecaca; font-size: 12px; }
+.sql-item.error { border-color: #7f1d1d; }
+.sql-item .res { padding: 6px 10px; font-size: 11.5px; color: #86efac; background: #0d1a14; }
+.kw { color: var(--kw); font-weight: 600; } .st { color: var(--str); } .nu { color: var(--num); } .cm { color: var(--cm); font-style: italic; }
+.app.sql-collapsed aside.sql .flow, .app.sql-collapsed aside.sql .sql-list, .app.sql-collapsed aside.sql header b { display: none; }
+.app.sql-collapsed aside.sql header { writing-mode: vertical-rl; padding: 12px 8px; }
+
+/* code blocks inside main */
+pre.code { background: var(--code-bg); color: var(--code-ink); padding: 12px; border-radius: 8px; font: 12px/1.5 var(--mono); overflow-x: auto; white-space: pre-wrap; margin: 8px 0; }
+
+/* modal */
+.modal-bg { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: flex; align-items: flex-start; justify-content: center; padding: 60px 16px; z-index: 50; overflow-y: auto; }
+.modal { background: #fff; border-radius: 12px; width: 100%; max-width: 560px; padding: 20px; box-shadow: 0 20px 50px rgba(0,0,0,.25); }
+.modal.wide { max-width: 980px; }
+.modal .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0 18px; }
+.modal .form-grid .full { grid-column: 1 / -1; }
+
+/* toast */
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); padding: 10px 16px; border-radius: 8px; color: #fff; background: #111827; z-index: 99; max-width: 70vw; box-shadow: var(--shadow); }
+.toast.bad { background: var(--bad); } .toast.good { background: var(--good); }
+
+/* charts */
+svg.chart { width: 100%; height: auto; display: block; }
+svg.chart text { font-size: 11px; fill: var(--muted); }
+svg.chart .bar { fill: var(--accent); }
+svg.chart .bar.alt { fill: #f59e0b; }
+svg.chart .line { fill: none; stroke: var(--accent); stroke-width: 2; }
+svg.chart .area { fill: var(--accent); opacity: .08; }
+svg.chart .grid { stroke: var(--line); }
+
+/* login */
+.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #0f172a, #1e3a8a); padding: 20px; }
+.login { background: #fff; border-radius: 14px; padding: 28px; width: 100%; max-width: 420px; box-shadow: 0 30px 60px rgba(0,0,0,.35); }
+.login .users { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px; margin-top: 14px; }
+.login .users button { font-size: 12px; text-align: left; }
+
+/* misc */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; flex-wrap: wrap; }
+.tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 8px 12px; }
+.tabs button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.kv { display: grid; grid-template-columns: 160px 1fr; gap: 4px 12px; font-size: 13px; }
+.kv div:nth-child(odd) { color: var(--muted); }
+.risk { display: flex; align-items: center; gap: 10px; }
+.meter { flex: 1; height: 8px; background: #eef0f3; border-radius: 99px; overflow: hidden; max-width: 220px; }
+.meter i { display: block; height: 100%; }
+.steps .step { display: grid; grid-template-columns: 34px 1fr; gap: 10px; margin-bottom: 10px; }
+.steps .who { font-weight: 700; border-radius: 7px; text-align: center; padding: 6px 0; height: fit-content; }
+.steps .who.A { background: var(--accent-soft); color: var(--accent); }
+.steps .who.B { background: var(--warn-soft); color: var(--warn); }
+.callout { padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); color: #1e3a8a; margin: 10px 0; }
+.callout.good { background: var(--good-soft); color: #065f46; }
+.callout.bad { background: var(--bad-soft); color: #7f1d1d; }
+#er-diagram { overflow: auto; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+#er-diagram svg { width: 100%; height: auto; }
+#er-diagram.zoom svg { width: 1800px; max-width: none !important; }
+td { overflow-wrap: anywhere; }
+
+@media (max-width: 1250px) {
+  .app { grid-template-columns: 190px 1fr; }
+  aside.sql { position: fixed; right: 0; top: 0; bottom: 0; width: 400px; z-index: 40; box-shadow: -8px 0 30px rgba(0,0,0,.3); }
+  .app.sql-collapsed aside.sql { width: 44px; }
+  .grid.k5 { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 800px) {
+  .app { grid-template-columns: 1fr; }
+  nav.side { flex-direction: row; flex-wrap: wrap; }
+  .grid.two, .grid.three, .grid.k5 { grid-template-columns: 1fr; }
+  aside.sql { width: 100%; }
+}

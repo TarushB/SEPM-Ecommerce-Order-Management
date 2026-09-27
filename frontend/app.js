@@ -389,3 +389,203 @@ async function setStatusPick(id) {
   }, "The trigger trg_validate_status_transition rejects backward moves; try one to see the error.");
 }
 async function cancelOrder(id) { const j = await POST(`/api/orders/${id}/cancel`); if (j.ok) { toast("Order canceled, stock returned", "good"); route(); } }
+
+async function newOrder(predictOnly = false) {
+  const m = await meta();
+  S.cart = []; S.customer = null; S.customerLabel = ""; S.custs = []; S.found = [];
+  modal(`<h2>${predictOnly ? "Try a prediction" : "New order"}</h2>
+    <div class="muted small">${predictOnly
+      ? "Pick a customer and a product. <b>Predict risk only</b> places the order inside a transaction, reads its features with SQL, scores it, then ROLLBACKs, so nothing is saved."
+      : "Runs <span class='mono'>CALL sp_place_order(...)</span>: order, items and payment are inserted atomically, stock is reduced by trigger, then the ML model scores the new order."}</div>
+
+    <h3>Step 1 · Customer</h3>
+    <div class="filters"><div class="field" style="flex:1"><label>City (e.g. sao paulo, campinas, rio de janeiro) or customer id</label>
+      <input id="cq" placeholder="type at least 2 letters, then pick a row" autocomplete="off"></div>
+      <button type="button" onclick="findCustomers($('#cq').value)">Search</button></div>
+    <div id="cres" style="max-height:230px;overflow-y:auto;margin-top:6px"></div>
+
+    <h3>Step 2 · Product(s)</h3>
+    <div class="filters">${fld("Category", sel("pcat", catOptions(m, "any category")))}
+      ${fld("Product id starts with", `<input id="pq" placeholder="optional" size="14">`)}
+      <button type="button" onclick="findProducts()">Find products</button></div>
+    <div id="pres" style="max-height:260px;overflow-y:auto;margin-top:6px"></div>
+    <div class="field" style="margin-top:8px"><label>Cart</label><div id="cart" class="muted small">empty: click <b>Add</b> on a product above</div></div>
+
+    <h3>Step 3 · Payment</h3>
+    <div class="filters">${fld("Payment type", sel("ptype", m.payment_types.filter(p => p.payment_type !== "not_defined").map(p => p.payment_type)))}
+      ${fld("Installments", `<input id="inst" type="number" min="1" max="24" value="1" style="width:90px">`)}</div>
+
+    <div id="order-status" class="callout" style="margin-top:14px"></div>
+    <div class="btn-row">
+      ${can("admin", "manager") ? `<button id="btn-predict" class="${predictOnly ? "primary" : ""}" onclick="whatIf()">Predict risk only (ROLLBACK)</button>` : ""}
+      <button id="btn-place" class="${predictOnly ? "" : "primary"}" onclick="submitOrder()">Place order</button>
+      <button onclick="closeModal()">Close</button></div>
+    <div id="ores"></div>`, true);
+  let t;
+  $("#cq").addEventListener("input", e => { clearTimeout(t); t = setTimeout(() => findCustomers(e.target.value), 350); });
+  $("#cq").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); findCustomers(e.target.value); } });
+  $("#pq").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); findProducts(); } });
+  $("[name=pcat]").addEventListener("change", findProducts);
+  updateOrderStatus();
+  findProducts();                       // show some products straight away
+}
+function updateOrderStatus() {
+  const box = $("#order-status"); if (!box) return;
+  const okC = !!S.customer, okP = S.cart.length > 0;
+  box.className = "callout " + (okC && okP ? "good" : "");
+  box.innerHTML = `${okC ? "✓ Customer: <b>" + esc(S.customerLabel) + "</b>" : "✗ No customer yet: search in step 1 and click <b>Select</b>"}<br>
+    ${okP ? "✓ Cart: <b>" + S.cart.length + " product" + (S.cart.length > 1 ? "s" : "") + "</b>" : "✗ No product yet: click <b>Add</b> on a product in step 2"}`;
+  ["#btn-predict", "#btn-place"].forEach(id => { const b = $(id); if (b) b.disabled = !(okC && okP); });
+}
+async function findCustomers(q) {
+  q = (q || "").trim().toLowerCase();
+  if (q.length < 2) return;
+  const j = await GET("/api/lookup/customers?q=" + encodeURIComponent(q));
+  if (!j.ok || !$("#cres")) return;
+  S.custs = j.data;
+  if (!j.data.length) { $("#cres").innerHTML = `<div class="empty">No customer matches "${esc(q)}". Try a city name such as sao paulo.</div>`; return; }
+  renderCustomers();
+  if (j.data.length === 1 && j.data[0].customer_id === q) pickCustomer(0);   // pasted a full id
+}
+function renderCustomers() {
+  $("#cres").innerHTML = table(S.custs, [
+    { key: "_", label: "", render: (v, r) => r.customer_id === S.customer ? `<span class="badge good">selected</span>`
+      : `<button type="button" class="small primary" onclick="event.stopPropagation();pickCustomer(${S.custs.indexOf(r)})">Select</button>` },
+    { key: "customer_id", render: v => shortId(v) }, { key: "city" }, { key: "state_code", label: "state" }],
+    { onRow: (r, i) => `pickCustomer(${i})` });
+}
+function pickCustomer(i) {
+  const c = S.custs[i]; if (!c) return;
+  S.customer = c.customer_id; S.customerLabel = `${c.customer_id.slice(0, 8)}… (${c.city} / ${c.state_code})`;
+  renderCustomers(); updateOrderStatus();
+}
+async function findProducts() {
+  const j = await GET("/api/lookup/products?" + qs({ category: $("[name=pcat]").value, q: ($("#pq").value || "").trim().toLowerCase(), facets: 1 }));
+  if (!j.ok || !$("#pres")) return;
+  if (j.facets) applyFacets($("#modal"), { pcat: j.facets.category });
+  S.found = j.data;
+  if (!j.data.length) { $("#pres").innerHTML = `<div class="empty">No products with stock found. Try another category.</div>`; return; }
+  $("#pres").innerHTML = table(j.data, [
+    { key: "_", label: "", render: (v, r) => `<button type="button" class="small primary" onclick="event.stopPropagation();addToCart(${S.found.indexOf(r)})">Add</button>` },
+    { key: "product_id", render: v => shortId(v) }, { key: "category" }, { key: "stock_qty", label: "stock", num: true },
+    { key: "price", label: "last price", num: true, render: v => fmtNum(v, 2) }, { key: "seller_id", label: "seller", render: v => shortId(v) }],
+    { onRow: (r, i) => `addToCart(${i})` });
+}
+function addToCart(i) {
+  const item = S.found[i]; if (!item) return;
+  S.cart.push(item); renderCart();
+  toast("Added to cart", "good");
+}
+function removeFromCart(k) { S.cart.splice(k, 1); renderCart(); }
+function renderCart() {
+  $("#cart").innerHTML = S.cart.length ? S.cart.map((c, k) => `${k + 1}. <span class="mono">${esc(c.product_id.slice(0, 8))}…</span> ${esc(c.category)} –
+    ${money(c.price)} + freight ${money(c.freight_value)} <a onclick="removeFromCart(${k})">remove</a>`).join("<br>")
+    : `empty: click <b>Add</b> on a product above`;
+  updateOrderStatus();
+}
+function orderReady() {
+  if (!S.customer) { toast("Step 1: search for a customer and click Select on a row", "bad"); return false; }
+  if (!S.cart.length) { toast("Step 2: click Add on at least one product", "bad"); return false; }
+  return true;
+}
+async function submitOrder() {
+  if (!orderReady()) return;
+  const j = await POST("/api/orders", { customer_id: S.customer, payment_type: $("[name=ptype]").value, installments: $("#inst").value,
+    items: S.cart.map(c => ({ product_id: c.product_id, seller_id: c.seller_id })) });
+  if (!j.ok) return;
+  const p = j.data.prediction;
+  $("#ores").innerHTML = `<div class="callout good" style="margin-top:12px">Order <a href="#/order/${j.data.order_id}" onclick="closeModal()">${j.data.order_id}</a> created.</div>
+    ${p ? `<div class="card">${riskBlock(p.late_probability, p.predicted_days, p.model_version, p.promised_days, p.threshold)}</div>` : ""}`;
+}
+async function whatIf() {
+  if (!orderReady()) return;
+  const c = S.cart[0];
+  const j = await POST("/api/ml/predict", { customer_id: S.customer, product_id: c.product_id, seller_id: c.seller_id, payment_type: $("[name=ptype]").value, installments: $("#inst").value });
+  if (!j.ok) return;
+  const p = j.data.prediction, f = j.data.features;
+  $("#ores").innerHTML = `<div class="card" style="margin-top:12px"><div class="muted small">The order was created inside a transaction, its features were read from v_order_features, then ROLLBACK - nothing was saved.${S.cart.length > 1 ? " (Prediction uses the first product in the cart.)" : ""}</div>
+    ${riskBlock(p.late_probability, p.predicted_days, p.model_version, p.promised_days, p.threshold)}
+    <div class="small muted" style="margin-top:6px">distance ${fmtNum(f.distance_km)} km · ${esc(f.seller_state)} → ${esc(f.customer_state)} · seller's past late rate ${f.seller_prior_late_rate !== null ? fmtNum(f.seller_prior_late_rate * 100, 1) + "%" : "n/a"}</div></div>`;
+  $("#ores").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+async function newReview(orderId) {
+  formModal("Add review", [{ name: "review_score", label: "Score (1-5)", type: "number", value: 5 }, { name: "comment_title", label: "Title" },
+    { name: "comment_message", label: "Comment", textarea: true, full: true }], async d => {
+    const j = await POST("/api/reviews", { ...d, order_id: orderId }); if (j.ok) { toast("Review saved", "good"); route(); return true; }
+  }, "Try a score of 7 (CHECK constraint) or a review on an order that is not delivered (trigger).");
+}
+
+/* ---------------- PRODUCTS */
+PAGES.products = async () => {
+  const m = await meta();
+  $("#main").innerHTML = `<div class="page-head"><div><h1>Products</h1><div class="muted">32,951 products; sorted by units sold.</div></div>
+    ${can("admin", "manager") ? `<button class="primary" onclick="editProduct()">+ New product</button>` : ""}</div>
+    <div class="card"><form id="pf" class="filters">${fld("Category", sel("category", catOptions(m)))}
+      ${fld("Min weight (g)", `<input name="min_weight" type="number" size="8">`)}${fld("Max weight (g)", `<input name="max_weight" type="number" size="8">`)}
+      ${fld("Low stock", sel("low_stock", [{ value: "", label: "any" }, { value: "yes", label: "< 30 units" }]))}
+      ${fld("Id starts with", `<input name="q" size="10">`)}<button class="primary">Search</button></form></div>
+    <div class="card" id="pres-main"></div>`;
+  $("#pf").addEventListener("submit", e => { e.preventDefault(); searchProducts(); });
+  autoSearch("#pf", searchProducts); searchProducts();
+};
+async function searchProducts() {
+  const j = await GET("/api/products?" + qs({ ...formData("#pf"), facets: 1 })); if (!j.ok) return;
+  applyFacets($("#pf"), j.facets);
+  S.products = j.data;
+  $("#pres-main").innerHTML = table(j.data, [{ key: "product_id", label: "product" }, { key: "category" }, { key: "weight_g", label: "weight g", num: true },
+    { key: "length_cm", label: "L", num: true }, { key: "height_cm", label: "H", num: true }, { key: "width_cm", label: "W", num: true },
+    { key: "stock_qty", label: "stock", num: true }, { key: "units_sold", label: "sold", num: true },
+    ...(can("admin", "manager") ? [{ key: "_", label: "", render: (v, r) => `<button class="small" onclick="event.stopPropagation();editProduct('${r.product_id}')">Edit</button>
+      <button class="small danger" onclick="event.stopPropagation();confirmDelete('product','/api/products/${r.product_id}',searchProducts)">Delete</button>` }] : [])]);
+}
+async function editProduct(id) {
+  const m = await meta(), p = id ? S.products.find(x => x.product_id === id) : {};
+  formModal(id ? "Edit product" : "New product", [
+    { name: "category_name", label: "Category", options: m.categories.map(c => ({ value: c.category_name, label: c.category_name_en })), value: p.category_name },
+    { name: "weight_g", label: "Weight (g)", type: "number", value: p.weight_g }, { name: "stock_qty", label: "Stock", type: "number", value: p.stock_qty ?? 50 },
+    { name: "length_cm", label: "Length (cm)", type: "number", value: p.length_cm }, { name: "height_cm", label: "Height (cm)", type: "number", value: p.height_cm },
+    { name: "width_cm", label: "Width (cm)", type: "number", value: p.width_cm }, { name: "photos_qty", label: "Photos", type: "number", value: p.photos_qty ?? 1 }],
+    async d => { const j = id ? await PUT("/api/products/" + id, d) : await POST("/api/products", d); if (j.ok) { toast("Saved", "good"); searchProducts(); return true; } },
+    "Negative stock or weight is rejected by CHECK constraints.");
+}
+
+/* ---------------- CUSTOMERS */
+PAGES.customers = async () => {
+  const m = await meta();
+  $("#main").innerHTML = `<div class="page-head"><div><h1>Customers</h1><div class="muted">Read through the privacy view <span class="mono">v_customer_public</span> (no coordinates).</div></div>
+    ${can("admin", "manager") ? `<button class="primary" onclick="newCustomer()">+ New customer</button>` : ""}</div>
+    <div class="card"><form id="cf" class="filters">${fld("State", sel("state", stateOptions(m)))}${fld("City starts with", `<input name="city">`)}
+      ${fld("Id starts with", `<input name="q" size="10">`)}${fld("Repeat buyers", sel("repeat", [{ value: "", label: "any" }, { value: "yes", label: "2+ orders" }]))}
+      <button class="primary">Search</button></form></div><div class="card" id="cres-main"></div>`;
+  $("#cf").addEventListener("submit", e => { e.preventDefault(); searchCustomers(); });
+  autoSearch("#cf", searchCustomers); searchCustomers();
+};
+async function searchCustomers() {
+  const j = await GET("/api/customers?" + qs({ ...formData("#cf"), facets: 1 })); if (!j.ok) return;
+  applyFacets($("#cf"), j.facets);
+  $("#cres-main").innerHTML = table(j.data, [{ key: "customer_id", label: "customer_id (account)" }, { key: "customer_unique_id", label: "person" },
+    { key: "city" }, { key: "state_code", label: "state" }, { key: "orders", num: true }], { onRow: r => `location.hash='#/customer/${r.customer_id}'` });
+}
+PAGES.customer = async id => {
+  const j = await GET("/api/customers/" + id); if (!j.ok) return $("#main").innerHTML = `<div class="callout bad">${esc(j.error)}</div>`;
+  const c = j.data.customer;
+  $("#main").innerHTML = `<a href="#/customers">◂ Customers</a><div class="page-head"><div><h1>Customer</h1><div class="mono">${esc(c.customer_id)}</div></div>
+    ${can("admin", "manager") ? `<div class="btn-row"><button onclick="moveCustomer('${c.customer_id}')">Change zip code</button>
+      <button class="danger" onclick="confirmDelete('customer account','/api/customers/${c.customer_id}',()=>location.hash='#/customers')">Delete</button></div>` : ""}</div>
+    <div class="card"><div class="kv"><div>Person (customer_unique_id)</div><div class="mono">${esc(c.customer_unique_id)}</div><div>City / state</div><div>${esc(c.city)} / ${esc(c.state_code)}</div>
+      <div>Zip prefix</div><div>${j.data.zip_prefix ?? "<span class='muted'>hidden for your role</span>"}</div></div></div>
+    <div class="card"><h2>All orders of this person (across their accounts)</h2>${table(j.data.orders, [{ key: "order_id", render: v => shortId(v) },
+      { key: "order_status", label: "status", render: statusBadge }, { key: "purchase_ts", label: "purchased" }, { key: "total", num: true, render: v => fmtNum(v, 2) },
+      { key: "rating", render: stars }], { onRow: r => `location.hash='#/order/${r.order_id}'` })}</div>`;
+};
+function newCustomer() {
+  formModal("New customer", [{ name: "zip_prefix", label: "Zip prefix (e.g. 1037 = São Paulo, 20040 = Rio)", type: "number", required: true },
+    { name: "customer_unique_id", label: "Existing person id (optional)" }], async d => {
+    const j = await POST("/api/customers", d); if (j.ok) { toast(`Created in ${j.data.city}/${j.data.state_code}`, "good"); location.hash = "#/customer/" + j.data.customer_id; return true; }
+  }, "City and state are NOT stored on the customer: they come from zip_code (3NF). An unknown zip fails the foreign key.");
+}
+function moveCustomer(id) {
+  formModal("Change zip code", [{ name: "zip_prefix", label: "New zip prefix", type: "number", required: true }], async d => {
+    const j = await PUT("/api/customers/" + id, d); if (j.ok) { toast("Updated", "good"); route(); return true; }
+  });
+}
