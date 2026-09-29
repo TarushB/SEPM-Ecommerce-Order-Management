@@ -1,17 +1,15 @@
 <div align="center">
 
-# 🛒 Olist E-Commerce & Order Management DBMS
+# 🛒 E-Commerce & Order Management System
 
-**A SQL-first database project on 100k real Brazilian e-commerce orders, with a web front end that shows every query it runs and an ML model that predicts late deliveries.**
+**SEPM course project: a database-centric order management system built on 100k real Brazilian e-commerce orders (Olist), with a web front end that shows every SQL query it runs and an ML model that predicts late deliveries.**
 
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-3.x-000000?logo=flask&logoColor=white)
 ![scikit-learn](https://img.shields.io/badge/scikit--learn-ML-F7931E?logo=scikitlearn&logoColor=white)
-![JavaScript](https://img.shields.io/badge/Frontend-Vanilla%20JS-F7DF1E?logo=javascript&logoColor=black)
-![Mermaid](https://img.shields.io/badge/ER%20diagram-Mermaid-FF3670?logo=mermaid&logoColor=white)
-
-[Features](#-features) · [Quick start](#-quick-start) · [ER diagram](#-er-diagram) · [Database design](#-database-design) · [SQL coverage](#-sql-coverage) · [ML](#-machine-learning-late-delivery-prediction) · [Screenshots](#-screenshots)
+![Process](https://img.shields.io/badge/Process-Agile%20Scrum-6f42c1)
+![Status](https://img.shields.io/badge/Status-Mid--semester%20release%20v1.0-2ea44f)
 
 <img src="docs/screenshots/dashboard.png" alt="Dashboard with the live SQL panel" width="900">
 
@@ -21,45 +19,126 @@
 
 ## 📑 Table of contents
 
-- [About](#-about)
-- [Features](#-features)
-- [Tech stack](#-tech-stack)
-- [Architecture](#-architecture)
-- [ER diagram](#-er-diagram)
-- [Dataset](#-dataset)
-- [Quick start](#-quick-start)
-- [Demo users & roles](#-demo-users--roles)
-- [Project structure](#-project-structure)
-- [Database design](#-database-design)
-- [SQL coverage](#-sql-coverage)
-- [Machine learning: late-delivery prediction](#-machine-learning-late-delivery-prediction)
-- [Screenshots](#-screenshots)
-- [Troubleshooting](#-troubleshooting)
-- [Acknowledgements](#-acknowledgements)
+1. [Team](#-team)
+2. [Problem statement & objectives](#-problem-statement--objectives)
+3. [Scope](#-scope)
+4. [Software process model](#-software-process-model)
+5. [Requirements](#-requirements)
+6. [System design](#-system-design)
+7. [Features](#-features)
+8. [Getting started](#-getting-started)
+9. [Demo users & roles](#-demo-users--roles)
+10. [Testing](#-testing)
+11. [Project management](#-project-management)
+12. [Repository structure](#-repository-structure)
+13. [Screenshots](#-screenshots)
+14. [Individual contributions](#-individual-contributions)
+15. [Troubleshooting](#-troubleshooting)
+16. [Acknowledgements](#-acknowledgements)
 
 ---
 
-## 📖 About
+## 👥 Team
 
-This project turns the public **Olist** marketplace dataset (9 CSV files, 99,441 orders, Sep 2016 – Oct 2018) into a normalized **PostgreSQL** database and builds everything a DBMS course asks for on top of it:
+| Member | Role in the project | GitHub email |
+|---|---|---|
+| **Tarush Banke** | Project lead · Database architect (design, schema, data pipeline) | tarushbanke123@gmail.com |
+| **Tanishk Varshney** | Back-end & database-logic developer (API, triggers, procedures, security) | tanishkvarshney370@gmail.com |
+| **Tanishq Mahajan** | Front-end & ML developer · QA lead (UI, ML model, testing) | tanishqmahajan.dev@gmail.com |
 
-| Requirement | Where it lives |
+---
+
+## 🎯 Problem statement & objectives
+
+Online marketplaces handle thousands of orders a day across many sellers, customers, payment methods and delivery routes. Kept in flat spreadsheets (as the raw Olist export is), this data suffers from **redundancy, update anomalies, no access control and no way to spot orders that are about to go wrong**.
+
+**Goal:** design and build a system that stores this data correctly, lets different staff roles work with it safely through a web interface, and uses the data to predict late deliveries.
+
+| # | Objective | Measured by |
+|---|---|---|
+| O1 | Model the domain and store it in a normalized (BCNF) relational database | ER model, keys, FDs, 16 tables in BCNF |
+| O2 | Enforce business rules and security inside the DBMS | Constraints, 6 triggers, stored procedures, 5 roles + row-level security |
+| O3 | Provide a web UI for insert, search, update, delete and reports that shows the SQL it executes | CRUD for 6 entities, 16 reports, SQL panel on every page |
+| O4 | Demonstrate transactions, ACID and concurrency control | Transactions lab + SQL demo scripts |
+| O5 | Add one useful AI/ML feature integrated with the DB and UI | Late-delivery classifier + delivery-time regressor, ROC-AUC 0.72 |
+| O6 | Run the work as a managed software project | Sprints, task board, risk register, meeting minutes, Git history |
+
+---
+
+## 📐 Scope
+
+**In scope:** order, product, customer, seller, review and category management; role-based access; reporting; transactions demo; late-delivery prediction; ER/schema viewer.
+
+**Out of scope (this release):** real payment processing, customer-facing storefront, e-mail notifications, cloud deployment, mobile app.
+
+**Constraints:** 3-member team, ~2 weeks for the mid-semester release, free/open-source tools only, must run on a Windows laptop.
+
+---
+
+## 🔄 Software process model
+
+We followed **Agile Scrum** with short sprints, because requirements were clear at the top level (course rubric) but the details (which queries, which ML task, which UI pages) had to be discovered while exploring the data.
+
+| Sprint | Dates (2026) | Sprint goal | Main owners |
+|---|---|---|---|
+| **Sprint 0** | 18 – 19 Sep | Requirements, dataset profiling, ER model, repo setup | Tarush |
+| **Sprint 1** | 20 – 23 Sep | Schema, data loading & cleaning, indexes, views, triggers, procedures, security | Tarush, Tanishk |
+| **Sprint 2** | 24 – 27 Sep | Flask API, front end, report queries, ML model | Tanishk, Tanishq |
+| **Sprint 3** | 28 Sep – 1 Oct | Transactions/concurrency demos, integration testing, documentation, mid-sem release | All |
+
+Scrum practices used: a product backlog and task board, short online stand-ups, a sprint review and retrospective at the end of each sprint, and small commits to `main` after a teammate had looked at the change. Details, Gantt chart, risk register and meeting minutes are in **[docs/ProjectPlan.md](docs/ProjectPlan.md)**.
+
+---
+
+## 📋 Requirements
+
+Full Software Requirements Specification: **[docs/SRS.md](docs/SRS.md)** (IEEE 830-style).
+
+**Key functional requirements**
+
+| ID | Requirement |
 |---|---|
-| Entities, relationships, ER/EER model → relational schema | [ER diagram](#-er-diagram), `db/01_schema.sql` |
-| Keys, functional dependencies, normalization to 3NF/BCNF | [Database design](#-database-design), `db/14_normalization_demo.sql` |
-| DDL + DML, joins, nested/correlated queries, aggregates, GROUP BY/HAVING | `db/01`–`03`, `db/09_queries.sql`, `db/12_ddl_dml_demo.sql` |
-| Views, indexes, triggers, stored procedures | `db/04`–`07`, `db/13_index_demo.sql` |
-| Transactions, ACID, concurrency | `db/10_transactions_demo.sql`, `db/11_concurrency_demo.sql`, **Transactions lab** page |
-| Security and role-based access control | `db/08_security.sql` (roles, GRANT/REVOKE, row-level security) |
-| Web front end: insert / search / update / delete / reports, SQL shown, ER button | `backend/`, `frontend/` |
-| AI/ML integrated with the database and front end | `ml/`, **ML insights** page, `ml_model` / `ml_prediction` tables |
+| FR-1 | Users log in; the system maps each user to a database role (admin, manager, analyst, seller, support) |
+| FR-2 | Create, search, update and delete orders, products, customers, sellers, reviews and categories |
+| FR-3 | Place an order atomically (order + items + payment) through a stored procedure |
+| FR-4 | Order status can only move forward (created → … → delivered); every change is audited |
+| FR-5 | Run 16 predefined reports, view their EXPLAIN plan and export them as CSV |
+| FR-6 | Show every SQL statement executed for each user action |
+| FR-7 | Show the ER model and live database schema from the UI |
+| FR-8 | Predict late-delivery risk and delivery time for an order |
+| FR-9 | Sellers see only their own orders (row-level security) |
 
-> **Front end → SQL → Database → Result.** Every screen has an **"SQL executed"** panel that shows each statement exactly as PostgreSQL received it, with row counts, timings and errors.
+**Key non-functional requirements:** security (bcrypt passwords, least privilege, SQL-injection-safe parameter binding), performance (search < 1 s on 100k orders using indexes), reliability (ACID transactions), usability (no install beyond PostgreSQL + Python), maintainability (one SQL file per concern).
+
+---
+
+## 🏗️ System design
+
+Full design document: **[docs/Design.md](docs/Design.md)** (architecture, ER model, keys, FDs, normalization, SQL catalogue, ML design).
+
+```mermaid
+flowchart LR
+    U([Browser<br/>HTML + JS]) -- "fetch /api/..." --> F[Flask API<br/>backend/app.py]
+    F -- "BEGIN<br/>SET LOCAL ROLE olist_*<br/>parameterized SQL<br/>COMMIT / ROLLBACK" --> P[(PostgreSQL 16<br/>olist)]
+    P -- rows + errors --> F
+    F -- "rows + SQL log" --> U
+    subgraph DB[Inside PostgreSQL]
+      direction TB
+      T[Tables · Views · Triggers<br/>Procedures · RLS policies]
+      MV[v_order_features /<br/>mv_order_features]
+      MP[ml_model · ml_prediction]
+    end
+    P --- DB
+    ML[ml/train.py<br/>scikit-learn] -- "SELECT features" --> MV
+    ML -- "INSERT metrics / COPY scores" --> MP
+    F -- "live scoring of new orders" --> MP
+```
+
+**ER model:** 16 tables in BCNF, including `orders`, `order_item`, `payment`, `review`, `product`, `category`, `seller`, `customer`, `customer_account`, `zip_code`, `state`, `order_status_log`, `app_user`, `ml_model` and `ml_prediction`. See [docs/Design.md → ER model](docs/Design.md#3-er-model) or the static image [`docs/er_diagram.png`](docs/er_diagram.png).
 
 ---
 
 ## ✨ Features
-
 ### 🗄️ Database (the core)
 - **16 tables in BCNF**, with 27 states, 19,177 zip codes, 96k customers, 3k sellers, 33k products, 112k order lines, 104k payments and 99k reviews.
 - **Real data cleaning:** 1,000,163 geolocation rows → one row per zip prefix, outliers removed, missing zips and category translations added, and anomalies kept visible in `v_data_quality`.
@@ -85,219 +164,22 @@ This project turns the public **Olist** marketplace dataset (9 CSV files, 99,441
 
 ---
 
-## 🧰 Tech stack
-
-| Layer | Technology |
-|---|---|
-| Database | PostgreSQL 16, PL/pgSQL, pgcrypto |
-| Data loading | `psql \copy` + SQL `INSERT … SELECT` (no ORM) |
-| Backend | Python 3, Flask, psycopg 3 (client-side binding, so the SQL shown is the SQL executed) |
-| Frontend | Plain HTML / CSS / JavaScript, no build step; Mermaid.js bundled for the ER diagram |
-| ML | pandas, scikit-learn (Logistic Regression, Random Forest, HistGradientBoosting), optional LightGBM, joblib |
-
----
-
-## 🏗️ Architecture
-
-```mermaid
-flowchart LR
-    U([Browser<br/>HTML + JS]) -- "fetch /api/..." --> F[Flask API<br/>backend/app.py]
-    F -- "BEGIN<br/>SET LOCAL ROLE olist_*<br/>parameterized SQL<br/>COMMIT / ROLLBACK" --> P[(PostgreSQL 16<br/>olist)]
-    P -- rows + errors --> F
-    F -- "rows + SQL log" --> U
-    subgraph DB[Inside PostgreSQL]
-      direction TB
-      T[Tables · Views · Triggers<br/>Procedures · RLS policies]
-      MV[v_order_features /<br/>mv_order_features]
-      MP[ml_model · ml_prediction]
-    end
-    P --- DB
-    ML[ml/train.py<br/>scikit-learn] -- "SELECT features" --> MV
-    ML -- "INSERT metrics / COPY scores" --> MP
-    F -- "live scoring of new orders" --> MP
-```
-
----
-
-## 🗺️ ER diagram
-
-> GitHub renders the diagram below from text. A static image is at [`docs/er_diagram.png`](docs/er_diagram.png), and the app has a **"ER model & schema"** page.
-
-```mermaid
-erDiagram
-    STATE ||--o{ ZIP_CODE : contains
-    ZIP_CODE ||--o{ CUSTOMER_ACCOUNT : locates
-    ZIP_CODE ||--o{ SELLER : locates
-    CUSTOMER ||--|{ CUSTOMER_ACCOUNT : owns
-    CUSTOMER_ACCOUNT ||--o{ ORDERS : places
-    ORDERS ||--o{ ORDER_ITEM : contains
-    PRODUCT ||--o{ ORDER_ITEM : "sold as"
-    SELLER ||--o{ ORDER_ITEM : fulfils
-    CATEGORY |o--o{ PRODUCT : groups
-    ORDERS ||--o{ PAYMENT : "paid by"
-    PAYMENT_TYPE ||--o{ PAYMENT : classifies
-    ORDERS ||--o{ REVIEW : receives
-    ORDERS ||--o{ ORDER_STATUS_LOG : "audited by"
-    ORDERS ||--o| ML_PREDICTION : "scored by"
-    ML_MODEL ||--o{ ML_PREDICTION : produces
-    SELLER |o--o{ APP_USER : "logs in as"
-
-    STATE {
-        char2 state_code PK
-        varchar state_name UK
-        varchar region
-    }
-    ZIP_CODE {
-        int zip_prefix PK
-        varchar city
-        char2 state_code FK
-        numeric lat
-        numeric lng
-    }
-    CUSTOMER {
-        char32 customer_unique_id PK
-    }
-    CUSTOMER_ACCOUNT {
-        char32 customer_id PK
-        char32 customer_unique_id FK
-        int zip_prefix FK
-    }
-    SELLER {
-        char32 seller_id PK
-        int zip_prefix FK
-    }
-    CATEGORY {
-        varchar category_name PK
-        varchar category_name_en UK
-    }
-    PRODUCT {
-        char32 product_id PK
-        varchar category_name FK
-        int name_length
-        int description_length
-        int photos_qty
-        int weight_g
-        int length_cm
-        int height_cm
-        int width_cm
-        int stock_qty
-    }
-    ORDERS {
-        char32 order_id PK
-        char32 customer_id FK
-        varchar order_status
-        timestamp purchase_ts
-        timestamp approved_at
-        timestamp delivered_carrier_date
-        timestamp delivered_customer_date
-        timestamp estimated_delivery_date
-    }
-    ORDER_ITEM {
-        char32 order_id PK, FK
-        int order_item_id PK
-        char32 product_id FK
-        char32 seller_id FK
-        timestamp shipping_limit_date
-        numeric price
-        numeric freight_value
-    }
-    PAYMENT_TYPE {
-        varchar payment_type PK
-        varchar description
-    }
-    PAYMENT {
-        char32 order_id PK, FK
-        int payment_sequential PK
-        varchar payment_type FK
-        int installments
-        numeric payment_value
-    }
-    REVIEW {
-        char32 review_id PK
-        char32 order_id PK, FK
-        smallint review_score
-        text comment_title
-        text comment_message
-        timestamp creation_date
-        timestamp answer_ts
-    }
-    ORDER_STATUS_LOG {
-        bigint log_id PK
-        char32 order_id FK
-        varchar old_status
-        varchar new_status
-        timestamp changed_at
-        text changed_by
-    }
-    ML_MODEL {
-        varchar model_version PK
-        varchar algorithm
-        numeric roc_auc
-        numeric pr_auc
-        numeric threshold
-        boolean is_active
-    }
-    ML_PREDICTION {
-        char32 order_id PK, FK
-        varchar model_version FK
-        numeric late_probability
-        numeric predicted_days
-        timestamp scored_at
-    }
-    APP_USER {
-        int user_id PK
-        varchar username UK
-        text password_hash
-        varchar app_role
-        char32 seller_id FK
-    }
-```
-
-<details>
-<summary><b>Static ER diagram (PNG)</b></summary>
-
-![ER diagram](docs/er_diagram.png)
-
-</details>
-
-**Notation:** `||--o{` one to zero-or-many · `||--|{` one to one-or-many · `|o--o{` zero-or-one to many · **PK** primary key · **FK** foreign key · **UK** unique (candidate key).
-**Weak entities:** `ORDER_ITEM` and `PAYMENT` (identified by `order_id` + a partial key).
-
----
-
-## 📦 Dataset
-
-[Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce) on Kaggle. The CSVs are **not** included in this repository.
-
-| File | Rows | One row is… |
-|---|---:|---|
-| `olist_orders_dataset.csv` | 99,441 | an order |
-| `olist_order_items_dataset.csv` | 112,650 | a line item in an order |
-| `olist_order_payments_dataset.csv` | 103,886 | a payment method used on an order |
-| `olist_order_reviews_dataset.csv` | 99,224 | a customer review |
-| `olist_customers_dataset.csv` | 99,441 | a customer *per order* |
-| `olist_sellers_dataset.csv` | 3,095 | a seller |
-| `olist_products_dataset.csv` | 32,951 | a product |
-| `product_category_name_translation.csv` | 71 | a category (Portuguese → English) |
-| `olist_geolocation_dataset.csv` | 1,000,163 | a lat/lng point for a zip prefix |
-
-**Interesting facts found while profiling:** 8.1% of delivered orders arrived late, and late orders average **2.57★** against **4.29★** for on-time ones. Only 3.1% of customers ordered twice. `review_id` is not unique on its own.
-
----
-
-## 🚀 Quick start
-
+## 🚀 Getting started
 ### Prerequisites
 - **PostgreSQL 16**, with `psql` on your `PATH` (Windows: add `C:\Program Files\PostgreSQL\16\bin`)
 - **Python 3.10+**
 - The 9 Olist CSV files
 
-### 1. Place the project next to the data
+### 1. Get the code and the data
+```bash
+git clone https://github.com/TarushB/SEPM-Ecommerce-Order-Management.git
+```
+Download the 9 CSV files from [Kaggle](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce) (they are not committed).
 The scripts expect the CSVs in the folder **above** the project:
 ```
 Dataset/
 ├── olist_orders_dataset.csv   … (all 9 CSVs)
-└── olist-dbms/                ← this repository
+└── SEPM-Ecommerce-Order-Management/   ← this repository
 ```
 
 ### 2. Install Python packages
@@ -337,8 +219,7 @@ psql -U postgres -d olist -f db/14_normalization_demo.sql # anomalies + FD check
 
 ---
 
-## 👥 Demo users & roles
-
+## 👤 Demo users & roles
 Password = username + `123` (e.g. `admin` / `admin123`).
 
 | User | PostgreSQL role | What the database allows |
@@ -354,10 +235,38 @@ The app logs in as **`olist_app`** (`NOINHERIT`, no data privileges of its own) 
 
 ---
 
-## 🗂️ Project structure
+## 🧪 Testing
 
+Full test plan and results: **[docs/TestPlan.md](docs/TestPlan.md)**.
+
+| Level | What was tested | How |
+|---|---|---|
+| Unit (database) | constraints, triggers, procedures, RLS policies | SQL test scripts in `db/10`–`14`, expected errors checked |
+| Unit (ML) | feature pipeline, model metrics | time-series cross-validation + held-out test months |
+| Integration | Front end → API → SQL → DB → result | manual test cases per page, SQL panel checked |
+| System / acceptance | end-to-end flows for each role | test cases TC-01 … TC-30 in the test plan |
+| Security | privilege escalation, SQL injection, RLS bypass | negative test cases with the `seller` / `analyst` roles |
+
+Evidence (screenshots of every page) is in [`docs/screenshots/`](docs/screenshots/).
+
+---
+
+## 📊 Project management
+
+| Artifact | Where |
+|---|---|
+| Project plan, WBS, Gantt chart | [docs/ProjectPlan.md](docs/ProjectPlan.md#2-work-breakdown-structure) |
+| Effort estimation (COCOMO) | [docs/ProjectPlan.md](docs/ProjectPlan.md#4-effort-estimation) |
+| Risk register | [docs/ProjectPlan.md](docs/ProjectPlan.md#5-risk-management) |
+| Meeting minutes | [docs/ProjectPlan.md](docs/ProjectPlan.md#6-meeting-minutes) |
+| Version control | this Git repository: feature commits from all three members, 18 Sep → 1 Oct 2026 |
+| Configuration management | `.gitignore` (no data, no secrets, no build outputs), `requirements.txt`, scripted DB build |
+
+---
+
+## 🗂️ Repository structure
 ```
-olist-dbms/
+SEPM-Ecommerce-Order-Management/
 ├── setup_db.bat · train_model.bat · run_app.bat · requirements.txt
 ├── db/                              ← pure SQL, run by psql
 │   ├── 00_run_all.sql               runs 01–08 in order
@@ -386,103 +295,8 @@ olist-dbms/
 │   ├── train.py                     time-series CV, test evaluation, writes results to DB
 │   └── models/                      trained model (created by train_model.bat, git-ignored)
 ├── frontend/                        index.html · app.js · style.css · er.js · vendor/mermaid
-└── docs/                            er_diagram.png · screenshots/
+└── docs/                            SRS · Design · TestPlan · ProjectPlan · er_diagram.png · screenshots/
 ```
-
----
-
-## 🧮 Database design
-
-### Keys
-
-| Table | Primary key | Other candidate keys | Foreign keys |
-|---|---|---|---|
-| `state` | `state_code` | `state_name` | – |
-| `zip_code` | `zip_prefix` | – | `state_code → state` |
-| `customer` | `customer_unique_id` | – | – |
-| `customer_account` | `customer_id` | – | `customer_unique_id → customer`, `zip_prefix → zip_code` |
-| `seller` | `seller_id` | – | `zip_prefix → zip_code` |
-| `category` | `category_name` | `category_name_en` | – |
-| `product` | `product_id` | – | `category_name → category` |
-| `orders` | `order_id` | – | `customer_id → customer_account` |
-| `order_item` | `(order_id, order_item_id)` | – | `order_id`, `product_id`, `seller_id` |
-| `payment` | `(order_id, payment_sequential)` | – | `order_id`, `payment_type` |
-| `review` | `(review_id, order_id)` | – | `order_id` (review_id alone repeats 814×) |
-
-### Functional dependencies
-```
-order_id                        → customer_id, order_status, purchase_ts, approved_at, delivered_*, estimated_delivery_date
-customer_id                     → customer_unique_id, zip_prefix
-zip_prefix                      → city, state_code
-state_code                      → state_name, region
-(order_id, order_item_id)       → product_id, seller_id, shipping_limit_date, price, freight_value
-product_id                      → category_name, name/description length, photos_qty, weight, dimensions, stock_qty
-category_name ↔ category_name_en
-seller_id                       → zip_prefix
-(order_id, payment_sequential)  → payment_type, installments, payment_value
-(review_id, order_id)           → review_score, comment_title, comment_message, creation_date, answer_ts
-```
-
-### Normalization
-| Step | What was removed | Result |
-|---|---|---|
-| **1NF** | repeating groups (items, payments inside an order) | `order_item`, `payment` rows |
-| **2NF** | partial dependencies on `(order_id, order_item_id)` | `orders` and `product` split from `order_item` |
-| **3NF** | transitive dependencies: `customer → zip → city/state`, `product → category → English name`, `payment_type → description` | `zip_code`, `state`, `category`, `payment_type` |
-| **BCNF** | every determinant is a candidate key (`category` has two) | all 16 tables in BCNF |
-
-`db/14_normalization_demo.sql` rebuilds the flat table from real data and shows the **update, insert and delete anomalies** it would have.
-
----
-
-## 🧾 SQL coverage
-
-| # | Concept | Question answered |
-|---|---|---|
-| Q1 | INNER JOIN (5 tables) | Order lines with category and seller city |
-| Q2 | LEFT JOIN + IS NULL | Delivered orders never reviewed |
-| Q3 | SELF JOIN | Category pairs bought together |
-| Q4 | Aggregates + GROUP BY | Monthly orders, revenue, average ticket |
-| Q5 | GROUP BY + HAVING | Busy sellers with poor ratings |
-| Q6 | Subquery with IN | Customers of the #1 revenue category |
-| Q7 | Correlated subqueries | Loyal customers (3+ orders) and their spend |
-| Q8 | EXISTS / NOT EXISTS | Sellers with a 1★ review but no cancellations |
-| Q9 | Derived table | States faster than the national delivery average |
-| Q10 | Scalar subqueries + function | Orders with item count, total, amount paid |
-| Q11 | UNION / INTERSECT / EXCEPT | States with customers, sellers or both |
-| Q12 | CASE in aggregates | On-time vs late share and rating by state |
-| Q13 | Window functions (LAG, running SUM, RANK) | Month-over-month revenue growth |
-| Q13b | RANK() OVER (PARTITION BY) | Top 3 products in the 5 biggest categories |
-| Q14 | CTE + recursive CTE | New customers and lifetime value per month |
-| Q15 | ALL / ANY | Products heavier than every telephony product |
-| Q16 | Full-text search (GIN) | Reviews mentioning a word (Portuguese stemming) |
-
----
-
-## 🤖 Machine learning: late-delivery prediction
-
-**Question:** *at checkout, will this order arrive after the promised date, and how many days will it take?*
-
-| | |
-|---|---|
-| **Why this task** | Lateness is the strongest driver of bad reviews (2.57★ vs 4.29★). Recommendation was rejected because only 3.1% of customers buy twice. |
-| **Features (SQL view `v_order_features`)** | states and region, haversine distance from zip coordinates, items, sellers, price, freight, freight ratio, weight, volume, category, payment type, installments, month / weekday / hour, promised days, shipping-limit days, the seller's past orders and late rate |
-| **Leakage control** | seller history uses only deliveries completed **before** the purchase; delivery dates are never used as features |
-| **Validation** | rolling **time-series cross-validation** (3 folds) → model selection by mean ROC-AUC → threshold tuned on out-of-fold predictions → one final test on **Jun–Aug 2018** |
-| **Models compared** | distance-rule baseline, Logistic Regression, Random Forest, HistGradientBoosting (+ LightGBM if installed) |
-
-### Results on the untouched test months (late rate 5.5%)
-
-| Metric | Value |
-|---|---|
-| ROC-AUC | **0.72** |
-| PR-AUC | **0.11** (2× the base rate) |
-| Recall at chosen threshold | **66%** |
-| Delivery-time error (regression) | **3.5 days**, vs **12.7 days** for Olist's own promised date |
-
-> **Honest caveat:** the monthly late rate swings between 1.4% and 21% (e.g. the May 2018 truckers' strike), so lateness is hard to predict from checkout data alone. This concept drift is why time-based validation matters. The delivery-time estimate is the more useful output.
-
-**Integration with the database and UI:** metrics go to `ml_model`, scores to `ml_prediction`, and `v_high_risk_orders` joins them back for SQL users. New orders are scored live, and the ML page computes the confusion matrix and risk deciles **in SQL**.
 
 ---
 
@@ -497,12 +311,25 @@ seller_id                       → zip_prefix
 
 ---
 
+## 🤝 Individual contributions
+
+| Member | Responsibilities | Main files |
+|---|---|---|
+| **Tarush Banke** | Project planning & coordination; requirements (SRS); ER/EER model; relational schema; keys & functional dependencies; normalization to BCNF; CSV staging load & data cleaning; indexes; views & materialized views; DDL/DML, index and normalization demos; README & design doc | `db/00`–`05`, `db/12`–`14`, `setup_db.bat`, `docs/SRS.md`, `docs/Design.md`, `docs/ProjectPlan.md`, `docs/er_diagram.png` |
+| **Tanishk Varshney** | Triggers (status guard, audit, stock, review rule, delete guard); stored procedures & functions; roles, GRANT/REVOKE, column privileges, row-level security; 16 report queries; transactions/ACID & concurrency demos; Flask API and DB access layer | `db/06`–`11`, `backend/app.py`, `backend/db.py`, `backend/queries.py`, `backend/export_queries.py`, `run_app.bat`, `requirements.txt` |
+| **Tanishq Mahajan** | Front end (CRUD pages, faceted search, reports, SQL console, transactions lab, ER/schema page); ML problem framing, feature engineering, model selection, training & evaluation; ML service integration; test plan, test execution & screenshots | `frontend/`, `ml/`, `backend/ml_service.py`, `train_model.bat`, `docs/TestPlan.md`, `docs/screenshots/` |
+
+All members took part in sprint planning, code reviews and testing, and each can explain the complete flow **Front end → SQL → Database → Result**. The commit history of this repository shows each member's work.
+
+---
+
 ## 🛠️ Troubleshooting
 
 | Problem | Fix |
 |---|---|
 | `psql is not recognized` | Add `C:\Program Files\PostgreSQL\16\bin` to PATH and open a **new** terminal |
 | `Could not find the Olist CSV files` | Put the project folder inside the folder that holds the CSVs, or edit `DATADIR` in `setup_db.bat` |
+| Login says `Cannot connect to PostgreSQL` | PostgreSQL is not installed or its service is stopped: start `postgresql-x64-16` in `services.msc` |
 | `password authentication failed for user "olist_app"` | Re-run `setup_db.bat` (it recreates roles and privileges) |
 | ML page says "No trained model yet" | Run `train_model.bat`, then reload the page |
 | Page looks outdated after an update | Restart `run_app.bat` and press **Ctrl + F5** in the browser |
@@ -513,4 +340,4 @@ seller_id                       → zip_prefix
 
 - Data: [Olist Brazilian E-Commerce Public Dataset](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce) (CC BY-NC-SA 4.0)
 - ER diagrams rendered with [Mermaid](https://mermaid.js.org/)
-- Built as a DBMS course project: *E-Commerce and Order Management*
+- Built as a DBMS course project: *E-Commerce and Order Management* (Software Engineering & Project Management)
