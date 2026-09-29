@@ -151,6 +151,11 @@ def cumulative_le(facet):
     return facet
 
 
+@app.get("/")
+def index():
+    return send_from_directory(FRONTEND, "index.html")
+
+
 @app.get("/<path:path>")
 def static_files(path):
     if path.startswith("api/"):
