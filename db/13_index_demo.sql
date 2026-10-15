@@ -3,7 +3,7 @@
 -- Drops each index inside a transaction, measures, then rolls back.
 -- =====================================================================
 
-\echo ===== 1. Seller's order lines: B-tree index on order_item(seller_id) =====
+\echo ===== 1. Seller order lines: B-tree index on order_item(seller_id) =====
 BEGIN;
 DROP INDEX ix_order_item_seller;
 EXPLAIN (ANALYZE, COSTS OFF, SUMMARY ON)

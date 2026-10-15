@@ -142,7 +142,7 @@ flowchart LR
 ### 🗄️ Database (the core)
 - **16 tables in BCNF**, with 27 states, 19,177 zip codes, 96k customers, 3k sellers, 33k products, 112k order lines, 104k payments and 99k reviews.
 - **Real data cleaning:** 1,000,163 geolocation rows → one row per zip prefix, outliers removed, missing zips and category translations added, and anomalies kept visible in `v_data_quality`.
-- **Constraints everywhere:** PK, FK (`RESTRICT` / `CASCADE` / `SET NULL` chosen per relationship), `UNIQUE` candidate keys and `CHECK` rules.
+- **Constraints everywhere:** PK, FK (`ON DELETE CASCADE` for owned rows, `RESTRICT` for referenced master data), `UNIQUE` candidate keys and `CHECK` rules.
 - **8 views**, including an updatable view `WITH CHECK OPTION`, plus **2 materialized views** that feed the ML model.
 - **Indexes:** B-tree, composite, partial, expression and **GIN full-text** (Portuguese) indexes, with `EXPLAIN ANALYZE` before/after demos.
 - **6 triggers:** forward-only order status, an audit log, a delete guard, review-after-delivery, stock control and ML prediction invalidation.
@@ -208,6 +208,17 @@ python backend/app.py        # → http://localhost:5000
 Use **absolute** paths for `-f`, `datadir` and `dbdir`.
 </details>
 
+### Quick start with the bundled sample data (no Kaggle download)
+`sample_data/` holds a consistent 2,000-order extract of the Olist CSVs (≈3 MB). Point `datadir` at it to build a small database and try every feature, including ML training:
+```bash
+createdb -U postgres olist
+psql -U postgres -d olist -v ON_ERROR_STOP=1 -v datadir="$(pwd)/sample_data" -v dbdir="$(pwd)/db" -f "$(pwd)/db/00_run_all.sql"
+```
+On Windows, set `DATADIR` in `setup_db.bat` to the `sample_data` folder. Reported metrics and row counts in the docs come from the full dataset.
+
+### Configuration
+Defaults work for a local PostgreSQL. To change the host, port or passwords, see `config.example.env` (all settings are environment variables).
+
 ### 4. Explore the SQL demo scripts
 ```bash
 psql -U postgres -d olist -f db/09_queries.sql            # Q1–Q16
@@ -238,6 +249,13 @@ The app logs in as **`olist_app`** (`NOINHERIT`, no data privileges of its own) 
 ## 🧪 Testing
 
 Full test plan and results: **[docs/TestPlan.md](docs/TestPlan.md)**.
+
+Run the automated tests (database built, model trained):
+```bash
+psql -U postgres -d olist -f db/15_test_suite.sql   # TC-02..TC-21, every test inside BEGIN ... ROLLBACK
+python backend/app.py &                             # then, in another window:
+python tests/api_tests.py                           # TC-15..TC-31 through the running app (needs `requests`)
+```
 
 | Level | What was tested | How |
 |---|---|---|
@@ -283,7 +301,8 @@ SEPM-Ecommerce-Order-Management/
 │   ├── 11_concurrency_demo.sql      lost update, isolation levels, serializable, deadlock
 │   ├── 12_ddl_dml_demo.sql          ALTER / RENAME / TRUNCATE / DROP + DML (rolled back)
 │   ├── 13_index_demo.sql            EXPLAIN ANALYZE with vs. without indexes
-│   └── 14_normalization_demo.sql    update / insert / delete anomalies, FD checks
+│   ├── 14_normalization_demo.sql    update / insert / delete anomalies, FD checks
+│   └── 15_test_suite.sql            automated database test cases (rolled back)
 ├── backend/
 │   ├── app.py                       Flask API (every response includes the SQL log)
 │   ├── db.py                        per-request transaction + SET LOCAL ROLE + SQL log
@@ -295,7 +314,11 @@ SEPM-Ecommerce-Order-Management/
 │   ├── train.py                     time-series CV, test evaluation, writes results to DB
 │   └── models/                      trained model (created by train_model.bat, git-ignored)
 ├── frontend/                        index.html · app.js · style.css · er.js · vendor/mermaid
+├── tests/api_tests.py               end-to-end tests through the running app
+├── sample_data/                     2,000-order extract of the Olist CSVs (quick start)
+├── config.example.env               sample configuration (environment variables)
 └── docs/                            SRS · Design · TestPlan · ProjectPlan · er_diagram.png · screenshots/
+    └── submission/                  mid-semester report and design/test/management PDFs
 ```
 
 ---

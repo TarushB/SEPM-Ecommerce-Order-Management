@@ -19,3 +19,6 @@ ml/models/
 Thumbs.db
 .vscode/
 .idea/
+
+# bundled sample input data is versioned
+!sample_data/*.csv
